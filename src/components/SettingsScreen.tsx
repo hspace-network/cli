@@ -35,7 +35,7 @@ const FIELDS: Field[] = [
 function maskApiKey(key: string | undefined): string {
   if (!key) return "(not set)";
   if (key.length <= 4) return "*".repeat(key.length);
-  return "*".repeat(Math.max(8, key.length - 4)) + key.slice(-4);
+  return "********" + key.slice(-4);
 }
 
 function providerLabel(p: Provider): string {
@@ -59,7 +59,7 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
   const providers = cached?.providers ?? [];
   const platforms = cached?.platforms ?? [];
   const effective = config
-    ? getEffectiveSelection(config, cached?.defaults)
+    ? getEffectiveSelection(config, cached?.defaults, providers)
     : { provider: undefined, model: undefined, platform: undefined };
   const currentProvider = effective.provider
     ? providers.find((p) => p.id === effective.provider)
@@ -161,8 +161,15 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
         const chosen = providers[subIdx];
         if (!chosen) return;
         const patch: Partial<CliConfig> = { provider: chosen.id };
-        if (chosen.id !== effective.provider) {
-          patch.model = undefined;
+        const currentModel = effective.model;
+        const modelStillValid =
+          !!currentModel && chosen.models.includes(currentModel);
+        if (!modelStillValid) {
+          const fallback =
+            (chosen.defaultModel && chosen.models.includes(chosen.defaultModel)
+              ? chosen.defaultModel
+              : undefined) ?? chosen.models[0];
+          patch.model = fallback;
         }
         persist(patch).then(() => setView("list"));
         return;
@@ -232,8 +239,11 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
         setApiKeyDraft((d) => d.slice(0, -1));
         return;
       }
-      if (!key.ctrl && !key.meta && input && input.length === 1) {
-        setApiKeyDraft((d) => d + input);
+      if (!key.ctrl && !key.meta && input) {
+        const sanitized = input.replace(/[\r\n]/g, "");
+        if (sanitized) {
+          setApiKeyDraft((d) => d + sanitized);
+        }
         return;
       }
     }
@@ -255,13 +265,13 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
         {view === "list"
           ? "Up/Down move  Enter edit  Esc close"
           : view === "apikey"
-            ? "Type to edit  Tab toggle mask  Enter save  Esc cancel"
-            : "Up/Down move  Enter select  Esc back"}
+            ? <Text>Type to edit  <Text color="cyan">Tab</Text> toggle mask  <Text color="cyan">Enter</Text> save  <Text color="cyan">Esc</Text> cancel</Text>
+            : <Text>Up/Down move  <Text color="cyan">Enter</Text> select  <Text color="cyan">Esc</Text> back</Text>}
       </Text>
     </Box>
   );
 
-  const renderFooter = (text: string) => (
+  const renderFooter = (text: React.ReactNode) => (
     <Box borderStyle="single" borderColor="gray" paddingX={1} flexShrink={0} width={width}>
       <Text dimColor>{text}</Text>
     </Box>
@@ -462,7 +472,7 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
           </Text>
         </Box>
       </Box>
-      {renderFooter("Enter save  Esc cancel  Tab toggle mask")}
+      {renderFooter(<Text><Text color="cyan">Enter</Text> save  <Text color="cyan">Esc</Text> cancel  <Text color="cyan">Tab</Text> toggle mask</Text>)}
     </Box>
   );
 }

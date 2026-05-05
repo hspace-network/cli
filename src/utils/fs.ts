@@ -25,6 +25,10 @@ export function getWalletPath(name: string): string {
   return join(getWalletsDir(), `${name}.json`);
 }
 
+export function getAgentTokenPath(name: string): string {
+  return join(getWalletsDir(), `${name}.token.json`);
+}
+
 export async function ensureDir(dirPath: string): Promise<void> {
   await mkdir(dirPath, { recursive: true });
 }
@@ -62,6 +66,10 @@ export async function writeText(filePath: string, content: string): Promise<void
 
 export async function removeDir(dirPath: string): Promise<void> {
   await rm(dirPath, { recursive: true, force: true });
+}
+
+export async function removeFile(filePath: string): Promise<void> {
+  await rm(filePath, { force: true });
 }
 
 export async function listDirs(parentPath: string): Promise<string[]> {

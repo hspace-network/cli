@@ -1,4 +1,4 @@
-import { getTradeLogPath, getAgent } from "../services/agent.service.js";
+import { ensureStrategyFile, getAgent } from "../services/agent.service.js";
 import { fileExists } from "../utils/fs.js";
 import { log } from "../utils/logger.js";
 import type { InteractiveResult } from "./index.js";
@@ -15,13 +15,13 @@ export async function editCommand(args: string[]): Promise<InteractiveResult> {
     return { lines: [log.error((err as Error).message)] };
   }
 
-  const tradePath = getTradeLogPath(name);
-  if (!(await fileExists(tradePath))) {
-    return { lines: [log.error(`trade.md not found for agent "${name}".`)] };
+  const strategyPath = await ensureStrategyFile(name);
+  if (!(await fileExists(strategyPath))) {
+    return { lines: [log.error(`strategy.md not found for agent "${name}".`)] };
   }
 
   return {
-    lines: [log.dim(`  Opening trade.md for "${name}"...`)],
-    openEditor: { filePath: tradePath, fileName: `${name}/trade.md` },
+    lines: [log.dim(`\nOpening strategy.md for "${name}"...`)],
+    openEditor: { filePath: strategyPath, fileName: `${name}/strategy.md` },
   };
 }

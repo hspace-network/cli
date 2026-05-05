@@ -9,6 +9,13 @@ import {
 
 export interface Room {
   id: string;
+  market: string;
+  interval: string;
+  name?: string;
+}
+
+export interface Market {
+  id: string;
   name?: string;
 }
 
@@ -16,6 +23,7 @@ export interface Provider {
   id: string;
   label?: string;
   models: string[];
+  defaultModel?: string;
 }
 
 export interface Platform {
@@ -40,6 +48,8 @@ export interface CliConfig {
 export interface NodeConfig {
   version: string;
   rooms: Room[];
+  markets: Market[];
+  intervals: string[];
   providers: Provider[];
   platforms: Platform[];
   defaults: NodeDefaults;
@@ -137,14 +147,40 @@ function parseRooms(value: unknown): Room[] {
   if (!Array.isArray(value)) return [];
   const rooms: Room[] = [];
   for (const entry of value) {
-    if (entry && typeof entry === "object" && typeof (entry as Room).id === "string") {
-      const room: Room = { id: (entry as Room).id };
-      const name = (entry as Room).name;
-      if (typeof name === "string" && name.length > 0) room.name = name;
-      rooms.push(room);
-    }
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Partial<Room>;
+    if (typeof e.id !== "string" || e.id.length === 0) continue;
+    const market = typeof e.market === "string" && e.market.length > 0 ? e.market : "";
+    const interval = typeof e.interval === "string" && e.interval.length > 0 ? e.interval : "";
+    if (!market || !interval) continue;
+    const room: Room = { id: e.id, market, interval };
+    if (typeof e.name === "string" && e.name.length > 0) room.name = e.name;
+    rooms.push(room);
   }
   return rooms;
+}
+
+function parseMarkets(value: unknown): Market[] {
+  if (!Array.isArray(value)) return [];
+  const markets: Market[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Partial<Market>;
+    if (typeof e.id !== "string" || e.id.length === 0) continue;
+    const market: Market = { id: e.id };
+    if (typeof e.name === "string" && e.name.length > 0) market.name = e.name;
+    markets.push(market);
+  }
+  return markets;
+}
+
+function parseIntervals(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry === "string" && entry.length > 0) out.push(entry);
+  }
+  return out;
 }
 
 function parseProviders(value: unknown): Provider[] {
@@ -163,6 +199,14 @@ function parseProviders(value: unknown): Provider[] {
     const provider: Provider = { id, models: cleanModels };
     const label = (entry as Provider).label;
     if (typeof label === "string" && label.length > 0) provider.label = label;
+    const defaultModel = (entry as Provider).defaultModel;
+    if (
+      typeof defaultModel === "string" &&
+      defaultModel.length > 0 &&
+      cleanModels.includes(defaultModel)
+    ) {
+      provider.defaultModel = defaultModel;
+    }
     providers.push(provider);
   }
   return providers;
@@ -233,6 +277,8 @@ export async function fetchNodeConfig(url: string): Promise<NodeConfig> {
   return {
     version: cfg.version,
     rooms: parseRooms(cfg.rooms),
+    markets: parseMarkets(cfg.markets),
+    intervals: parseIntervals(cfg.intervals),
     providers: parseProviders(cfg.providers),
     platforms: parsePlatforms(cfg.platforms),
     defaults: parseDefaults(cfg.defaults),
@@ -248,10 +294,32 @@ export interface EffectiveSelection {
 export function getEffectiveSelection(
   config: CliConfig,
   defaults: NodeDefaults | undefined,
+  providers?: Provider[],
 ): EffectiveSelection {
+  const providerId = config.provider ?? defaults?.provider;
+  const providerEntry = providerId
+    ? providers?.find((p) => p.id === providerId)
+    : undefined;
+
+  let model = config.model;
+  if (model && providerEntry && !providerEntry.models.includes(model)) {
+    model = undefined;
+  }
+  if (!model) {
+    if (providerEntry?.defaultModel && providerEntry.models.includes(providerEntry.defaultModel)) {
+      model = providerEntry.defaultModel;
+    } else if (providerEntry && defaults?.model && providerEntry.models.includes(defaults.model)) {
+      model = defaults.model;
+    } else if (providerEntry) {
+      model = providerEntry.models[0];
+    } else {
+      model = defaults?.model;
+    }
+  }
+
   return {
-    provider: config.provider ?? defaults?.provider,
-    model: config.model ?? defaults?.model,
+    provider: providerId,
+    model,
     platform: config.platform ?? defaults?.platform,
   };
 }

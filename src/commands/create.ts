@@ -6,13 +6,17 @@ import {
   importFromMnemonic,
   saveWallet,
 } from "../services/wallet.service.js";
+import { loadCliConfig } from "../services/config.service.js";
+import { registerAgent } from "../services/registration.service.js";
+import { dirExists, getAgentDir } from "../utils/fs.js";
+import { setBusy } from "../utils/busy.js";
 import { log } from "../utils/logger.js";
 import type { InteractiveResult, PendingPrompt } from "./index.js";
 
 function walletSuccessLines(name: string, address: string, privateKey?: string): string[] {
   const lines = [
     log.blank(),
-    log.success(`Wallet linked to ${chalk.cyanBright.bold(name)}`),
+    log.success(`Registered ${chalk.cyanBright.bold(name)} with the node.`),
     log.raw(`  ${chalk.dim("Address")}  ${chalk.white(address)}`),
   ];
   if (privateKey) {
@@ -22,7 +26,11 @@ function walletSuccessLines(name: string, address: string, privateKey?: string):
       log.raw(`  ${chalk.yellow(privateKey)}`),
     );
   }
-  lines.push(log.blank());
+  lines.push(
+    log.blank(),
+    log.dim(`  Run ${chalk.cyan(`edit ${name}`)} to define its strategy.`),
+    log.blank(),
+  );
   return lines;
 }
 
@@ -31,8 +39,40 @@ async function handleWalletSave(
   result: { address: string; privateKey: string },
   showKey: boolean,
 ): Promise<{ lines: string[] }> {
-  await saveWallet(name, result);
-  await updateAgentConfig(name, { walletAddress: result.address });
+  const cfg = await loadCliConfig();
+
+  setBusy("Registering agent with node...");
+  try {
+    await registerAgent({
+      nodeUrl: cfg.nodeUrl,
+      name,
+      address: result.address,
+      privateKey: result.privateKey as `0x${string}`,
+    });
+  } catch (err) {
+    setBusy(null);
+    return {
+      lines: [
+        log.error(`Registration failed: ${(err as Error).message}`),
+        log.dim("  Agent was not created."),
+      ],
+    };
+  }
+  setBusy(null);
+
+  try {
+    await createAgent(name);
+    await saveWallet(name, result);
+    await updateAgentConfig(name, { walletAddress: result.address });
+  } catch (err) {
+    return {
+      lines: [
+        log.error(`Failed to persist agent locally: ${(err as Error).message}`),
+        log.dim("  Note: the agent was registered with the node."),
+      ],
+    };
+  }
+
   return { lines: walletSuccessLines(name, result.address, showKey ? result.privateKey : undefined) };
 }
 
@@ -100,19 +140,15 @@ export async function createCommand(args: string[]): Promise<InteractiveResult> 
     return { lines: [log.error(validationError)] };
   }
 
-  try {
-    const config = await createAgent(name);
-    return {
-      lines: [
-        log.blank(),
-        log.success(`Agent ${chalk.cyanBright.bold(config.name)} created successfully.`),
-        log.dim(`   Status:  ${config.status}`),
-        log.dim(`   Created: ${config.createdAt.split("T")[0]}`),
-        log.blank(),
-      ],
-      prompt: walletPrompt(name),
-    };
-  } catch (err) {
-    return { lines: [log.error((err as Error).message)] };
+  if (await dirExists(getAgentDir(name!))) {
+    return { lines: [log.error(`Agent "${name}" already exists.`)] };
   }
+
+  return {
+    lines: [
+      log.blank(),
+      log.dim(`  Creating agent ${chalk.cyanBright.bold(name!)}...`),
+    ],
+    prompt: walletPrompt(name!),
+  };
 }

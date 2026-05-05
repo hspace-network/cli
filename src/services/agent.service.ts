@@ -1,3 +1,4 @@
+import { readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
 import {
   getAgentsRoot,
@@ -49,17 +50,41 @@ export async function createAgent(name: string): Promise<AgentConfig> {
   await writeJson(join(dir, "config.json"), config);
 
   const date = config.createdAt.split("T")[0];
-  const tradeLog = [
-    `# ${name} -- Trade Log`,
+  const strategy = [
+    `# ${name} -- Strategy`,
     "",
     `> Created on ${date}`,
+    "",
+    `This file defines the trading strategy for ${name}. The CLI reads it whenever you /ask about this agent so the AI can give relevant advice.`,
+    "",
+    "## Objective",
+    "",
+    "(What is this agent trying to achieve? e.g. \"Swing-trade BTC, 1-week horizon\".)",
+    "",
+    "## Markets",
+    "",
+    "- (e.g. BTCUSDT, ETHUSDT)",
+    "",
+    "## Entry Rules",
+    "",
+    "- ",
+    "",
+    "## Exit Rules",
+    "",
+    "- ",
+    "",
+    "## Risk",
+    "",
+    "- Max position size:",
+    "- Stop loss:",
+    "- Take profit:",
     "",
     "## Notes",
     "",
     "",
   ].join("\n");
 
-  await writeText(join(dir, "trade.md"), tradeLog);
+  await writeText(join(dir, "strategy.md"), strategy);
 
   return config;
 }
@@ -109,6 +134,29 @@ export async function updateAgentConfig(name: string, updates: Partial<AgentConf
   return updated;
 }
 
-export function getTradeLogPath(name: string): string {
-  return join(getAgentDir(name), "trade.md");
+export function getStrategyPath(name: string): string {
+  return join(getAgentDir(name), "strategy.md");
+}
+
+async function migrateLegacyTradeFile(name: string): Promise<void> {
+  const newPath = getStrategyPath(name);
+  if (await fileExists(newPath)) return;
+  const legacyPath = join(getAgentDir(name), "trade.md");
+  if (await fileExists(legacyPath)) {
+    await rename(legacyPath, newPath);
+  }
+}
+
+export async function ensureStrategyFile(name: string): Promise<string> {
+  await migrateLegacyTradeFile(name);
+  return getStrategyPath(name);
+}
+
+export async function readStrategy(name: string): Promise<string | null> {
+  await migrateLegacyTradeFile(name);
+  const path = getStrategyPath(name);
+  if (!(await fileExists(path))) return null;
+  const raw = await readFile(path, "utf-8");
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? raw : null;
 }
