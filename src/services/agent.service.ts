@@ -8,7 +8,6 @@ import {
   fileExists,
   readJson,
   writeJson,
-  writeText,
   removeDir,
   listDirs,
 } from "../utils/fs.js";
@@ -18,6 +17,10 @@ export interface AgentConfig {
   createdAt: string;
   status: "idle" | "active";
   walletAddress?: string;
+  /** Max USD notional this agent may stake on a single auto-trade. 0 = disabled. */
+  spendingCapUsd?: number;
+  /** Id of the strategy assigned to this agent (builtin or user-saved). */
+  strategyId?: string;
 }
 
 const NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9-]*$/;
@@ -45,46 +48,10 @@ export async function createAgent(name: string): Promise<AgentConfig> {
     name,
     createdAt: new Date().toISOString(),
     status: "idle",
+    strategyId: "always-notr",
   };
 
   await writeJson(join(dir, "config.json"), config);
-
-  const date = config.createdAt.split("T")[0];
-  const strategy = [
-    `# ${name} -- Strategy`,
-    "",
-    `> Created on ${date}`,
-    "",
-    `This file defines the trading strategy for ${name}. The CLI reads it whenever you /ask about this agent so the AI can give relevant advice.`,
-    "",
-    "## Objective",
-    "",
-    "(What is this agent trying to achieve? e.g. \"Swing-trade BTC, 1-week horizon\".)",
-    "",
-    "## Markets",
-    "",
-    "- (e.g. BTCUSDT, ETHUSDT)",
-    "",
-    "## Entry Rules",
-    "",
-    "- ",
-    "",
-    "## Exit Rules",
-    "",
-    "- ",
-    "",
-    "## Risk",
-    "",
-    "- Max position size:",
-    "- Stop loss:",
-    "- Take profit:",
-    "",
-    "## Notes",
-    "",
-    "",
-  ].join("\n");
-
-  await writeText(join(dir, "strategy.md"), strategy);
 
   return config;
 }

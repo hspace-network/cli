@@ -3,8 +3,10 @@ import {
   loadCliConfig,
   getCachedNodeConfig,
   getEffectiveSelection,
+  getProviderApiKey,
 } from "../services/config.service.js";
-import { listAgents, readStrategy } from "../services/agent.service.js";
+import { listAgents } from "../services/agent.service.js";
+import { resolveStrategyForAgent } from "../services/strategy.service.js";
 import {
   getHistory,
   pushExchange,
@@ -33,12 +35,12 @@ async function resolveScope(args: string[]): Promise<ResolvedScope> {
         error: `Provide a question after the agent name. Usage: /ask ${firstToken} <question>`,
       };
     }
-    const strategy = await readStrategy(firstToken);
+    const strategy = await resolveStrategyForAgent(firstToken);
     if (!strategy) {
       return {
         question: remaining,
         agentName: firstToken,
-        hint: `agent "${firstToken}" has no strategy yet. Run "edit ${firstToken}" to add one.`,
+        hint: `agent "${firstToken}" has no strategy. Run "set strategy <name>" or open "strategy".`,
       };
     }
     return {
@@ -57,12 +59,12 @@ async function resolveScope(args: string[]): Promise<ResolvedScope> {
 
   if (agents.length === 1) {
     const only = agents[0]!;
-    const strategy = await readStrategy(only.name);
+    const strategy = await resolveStrategyForAgent(only.name);
     if (!strategy) {
       return {
         question: fullQuestion,
         agentName: only.name,
-        hint: `agent "${only.name}" has no strategy yet. Run "edit ${only.name}" to add one.`,
+        hint: `agent "${only.name}" has no strategy. Run "set strategy <name>" or open "strategy".`,
       };
     }
     return {
@@ -96,17 +98,12 @@ export async function askCommand(args: string[]): Promise<InteractiveResult> {
     };
   }
 
-  if (!cfg.apiKey) {
-    return {
-      lines: [log.error('API key not set. Run "settings" to add one.')],
-    };
-  }
-
-  if (effective.provider === "0G") {
+  const providerApiKey = getProviderApiKey(cfg, effective.provider);
+  if (!providerApiKey) {
     return {
       lines: [
         log.error(
-          "0G provider is not implemented yet. Pick OpenAI or Claude in settings.",
+          `No API key for "${effective.provider}". Run "settings", pick the provider, and add its key.`,
         ),
       ],
     };
@@ -119,7 +116,7 @@ export async function askCommand(args: string[]): Promise<InteractiveResult> {
 
   const provider = effective.provider;
   const model = effective.model;
-  const apiKey = cfg.apiKey;
+  const apiKey = providerApiKey;
   const question = scope.question;
   const strategy = scope.strategy;
   const scopeKey = scope.agentName;

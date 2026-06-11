@@ -8,6 +8,7 @@ import {
 } from "../services/wallet.service.js";
 import { loadCliConfig } from "../services/config.service.js";
 import { registerAgent } from "../services/registration.service.js";
+import { agentExistsOnNode } from "../services/score.service.js";
 import { dirExists, getAgentDir } from "../utils/fs.js";
 import { setBusy } from "../utils/busy.js";
 import { log } from "../utils/logger.js";
@@ -26,19 +27,52 @@ function walletSuccessLines(name: string, address: string, privateKey?: string):
       log.raw(`  ${chalk.yellow(privateKey)}`),
     );
   }
-  lines.push(
-    log.blank(),
-    log.dim(`  Run ${chalk.cyan(`edit ${name}`)} to define its strategy.`),
-    log.blank(),
-  );
   return lines;
+}
+
+function capPrompt(name: string): PendingPrompt {
+  return {
+    prompt: `${chalk.dim("Spending cap per auto-trade (USD), e.g.")} ${chalk.white("50")} ${chalk.dim("— blank to disable:")}`,
+    onResponse: async (input: string) => {
+      const trimmed = input.trim();
+      let cap = 0;
+      if (trimmed) {
+        const n = Number(trimmed);
+        if (!Number.isFinite(n) || n < 0) {
+          return {
+            lines: [log.error("Enter a non-negative number (or leave blank).")],
+            nextPrompt: capPrompt(name),
+          };
+        }
+        cap = n;
+      }
+      try {
+        await updateAgentConfig(name, { spendingCapUsd: cap });
+      } catch (err) {
+        return { lines: [log.error((err as Error).message)] };
+      }
+      const capLabel =
+        cap > 0
+          ? `${chalk.green(`$${cap}`)} per trade`
+          : chalk.dim("disabled (auto-trade off)");
+      return {
+        lines: [
+          log.raw(`  ${chalk.dim("Spending cap")}  ${capLabel}`),
+          log.blank(),
+          log.dim(`  Run ${chalk.cyan("strategy")} to browse strategies or ${chalk.cyan(`set strategy <name>`)} to assign one.`),
+          log.dim(`  Run ${chalk.cyan(`cap ${name} <usd>`)} to change the spending cap.`),
+          log.blank(),
+        ],
+      };
+    },
+  };
 }
 
 async function handleWalletSave(
   name: string,
   result: { address: string; privateKey: string },
   showKey: boolean,
-): Promise<{ lines: string[] }> {
+): Promise<{ lines: string[]; nextPrompt?: PendingPrompt }> {
   const cfg = await loadCliConfig();
 
   setBusy("Registering agent with node...");
@@ -73,7 +107,10 @@ async function handleWalletSave(
     };
   }
 
-  return { lines: walletSuccessLines(name, result.address, showKey ? result.privateKey : undefined) };
+  return {
+    lines: walletSuccessLines(name, result.address, showKey ? result.privateKey : undefined),
+    nextPrompt: capPrompt(name),
+  };
 }
 
 function walletPrompt(name: string): PendingPrompt {
@@ -144,8 +181,25 @@ export async function createCommand(args: string[]): Promise<InteractiveResult> 
     return { lines: [log.error(`Agent "${name}" already exists.`)] };
   }
 
+  const prelude: string[] = [];
+  try {
+    const cfg = await loadCliConfig();
+    const onNode = await agentExistsOnNode({ nodeUrl: cfg.nodeUrl, agentName: name! });
+    if (onNode) {
+      return {
+        lines: [log.error(`Agent "${name}" already exists on the node. Pick a different name.`)],
+      };
+    }
+  } catch (err) {
+    prelude.push(
+      log.warn(`Could not check node for duplicate name: ${(err as Error).message}`),
+      log.dim("  Continuing — registration will fail if the name is taken."),
+    );
+  }
+
   return {
     lines: [
+      ...prelude,
       log.blank(),
       log.dim(`  Creating agent ${chalk.cyanBright.bold(name!)}...`),
     ],

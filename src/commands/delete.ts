@@ -4,6 +4,10 @@ import { deleteAgentOnNode } from "../services/nodeAgent.service.js";
 import { loadCliConfig } from "../services/config.service.js";
 import { walletExists } from "../services/wallet.service.js";
 import { clearAgent } from "../services/runs.cache.js";
+import {
+  getActiveAgent,
+  clearActiveAgent,
+} from "../services/active-agent.service.js";
 import { fileExists, getAgentTokenPath, removeFile } from "../utils/fs.js";
 import { setBusy } from "../utils/busy.js";
 import { HttpError } from "../utils/http.js";
@@ -70,6 +74,9 @@ export async function deleteCommand(args: string[]): Promise<InteractiveResult> 
 
         await deleteAgent(name);
         clearAgent(name);
+        if (getActiveAgent() === name) {
+          clearActiveAgent();
+        }
 
         const hasWallet = await walletExists(name);
         const lines = [

@@ -5,7 +5,11 @@ import {
   updateCliConfig,
   getCachedNodeConfig,
   getEffectiveSelection,
+  getEffectiveNetwork,
+  getProviderApiKey,
+  getPlatformCreds,
   type CliConfig,
+  type BybitNetwork,
   type Provider,
   type Platform,
 } from "../services/config.service.js";
@@ -16,9 +20,16 @@ interface SettingsScreenProps {
   onClose: () => void;
 }
 
-type View = "list" | "provider" | "model" | "apikey" | "platform";
+type View =
+  | "list"
+  | "provider"
+  | "providerkey"
+  | "model"
+  | "platform"
+  | "platformcreds"
+  | "network";
 
-type FieldId = "provider" | "model" | "apikey" | "platform";
+type FieldId = "provider" | "model" | "platform" | "network";
 
 interface Field {
   id: FieldId;
@@ -28,8 +39,13 @@ interface Field {
 const FIELDS: Field[] = [
   { id: "provider", label: "Provider" },
   { id: "model", label: "Model" },
-  { id: "apikey", label: "API Key" },
   { id: "platform", label: "Platform" },
+  { id: "network", label: "Network" },
+];
+
+const NETWORKS: { id: BybitNetwork; label: string }[] = [
+  { id: "mainnet", label: "mainnet" },
+  { id: "testnet", label: "testnet" },
 ];
 
 function maskApiKey(key: string | undefined): string {
@@ -51,9 +67,18 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
   const [view, setView] = useState<View>("list");
   const [fieldIdx, setFieldIdx] = useState(0);
   const [subIdx, setSubIdx] = useState(0);
-  const [apiKeyDraft, setApiKeyDraft] = useState("");
-  const [apiKeyVisible, setApiKeyVisible] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
+
+  // provider key editing
+  const [pendingProvider, setPendingProvider] = useState<string | null>(null);
+  const [providerKeyDraft, setProviderKeyDraft] = useState("");
+  const [providerKeyVisible, setProviderKeyVisible] = useState(true);
+
+  // platform creds editing
+  const [pendingPlatform, setPendingPlatform] = useState<string | null>(null);
+  const [platformKeyDraft, setPlatformKeyDraft] = useState("");
+  const [platformSecretDraft, setPlatformSecretDraft] = useState("");
+  const [platformFieldIdx, setPlatformFieldIdx] = useState(0);
 
   const cached = getCachedNodeConfig();
   const providers = cached?.providers ?? [];
@@ -73,6 +98,47 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
   const persist = async (patch: Partial<CliConfig>) => {
     const next = await updateCliConfig(patch);
     setConfig(next);
+  };
+
+  const saveProviderKey = () => {
+    if (!config || !pendingProvider) return;
+    const trimmed = providerKeyDraft.trim();
+    const nextApiKeys = { ...(config.apiKeys ?? {}) };
+    if (trimmed) nextApiKeys[pendingProvider] = trimmed;
+    else delete nextApiKeys[pendingProvider];
+
+    const patch: Partial<CliConfig> = {
+      provider: pendingProvider,
+      apiKeys: nextApiKeys,
+    };
+    const chosen = providers.find((p) => p.id === pendingProvider);
+    const currentModel = effective.model;
+    const modelStillValid =
+      !!currentModel && !!chosen && chosen.models.includes(currentModel);
+    if (chosen && !modelStillValid) {
+      patch.model =
+        (chosen.defaultModel && chosen.models.includes(chosen.defaultModel)
+          ? chosen.defaultModel
+          : undefined) ?? chosen.models[0];
+    }
+    persist(patch).then(() => setView("list"));
+  };
+
+  const savePlatformCreds = () => {
+    if (!config || !pendingPlatform) return;
+    const apiKey = platformKeyDraft.trim();
+    const apiSecret = platformSecretDraft.trim();
+    if (!apiKey || !apiSecret) {
+      setNotice("Both API key and secret are required to select this platform.");
+      return;
+    }
+    const nextPlatformKeys = {
+      ...(config.platformKeys ?? {}),
+      [pendingPlatform]: { apiKey, apiSecret },
+    };
+    persist({ platform: pendingPlatform, platformKeys: nextPlatformKeys }).then(() =>
+      setView("list"),
+    );
   };
 
   useInput((input, key) => {
@@ -123,13 +189,6 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
           return;
         }
 
-        if (field.id === "apikey") {
-          setApiKeyDraft(config.apiKey ?? "");
-          setApiKeyVisible(true);
-          setView("apikey");
-          return;
-        }
-
         if (field.id === "platform") {
           if (platforms.length === 0) {
             setNotice("Not connected to a node. Press Esc to exit, then run \"node set <url>\".");
@@ -138,6 +197,13 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
           const idx = platforms.findIndex((p) => p.id === effective.platform);
           setSubIdx(idx === -1 ? 0 : idx);
           setView("platform");
+          return;
+        }
+
+        if (field.id === "network") {
+          const idx = NETWORKS.findIndex((n) => n.id === getEffectiveNetwork(config));
+          setSubIdx(idx === -1 ? 0 : idx);
+          setView("network");
           return;
         }
       }
@@ -160,18 +226,35 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
       if (key.return) {
         const chosen = providers[subIdx];
         if (!chosen) return;
-        const patch: Partial<CliConfig> = { provider: chosen.id };
-        const currentModel = effective.model;
-        const modelStillValid =
-          !!currentModel && chosen.models.includes(currentModel);
-        if (!modelStillValid) {
-          const fallback =
-            (chosen.defaultModel && chosen.models.includes(chosen.defaultModel)
-              ? chosen.defaultModel
-              : undefined) ?? chosen.models[0];
-          patch.model = fallback;
-        }
-        persist(patch).then(() => setView("list"));
+        setPendingProvider(chosen.id);
+        setProviderKeyDraft(getProviderApiKey(config, chosen.id) ?? "");
+        setProviderKeyVisible(true);
+        setView("providerkey");
+        return;
+      }
+      return;
+    }
+
+    if (view === "providerkey") {
+      if (key.escape) {
+        setView("provider");
+        return;
+      }
+      if (key.tab) {
+        setProviderKeyVisible((v) => !v);
+        return;
+      }
+      if (key.return) {
+        saveProviderKey();
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setProviderKeyDraft((d) => d.slice(0, -1));
+        return;
+      }
+      if (!key.ctrl && !key.meta && input) {
+        const sanitized = input.replace(/[\r\n]/g, "");
+        if (sanitized) setProviderKeyDraft((d) => d + sanitized);
         return;
       }
       return;
@@ -215,37 +298,72 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
       if (key.return) {
         const chosen = platforms[subIdx];
         if (!chosen) return;
-        persist({ platform: chosen.id }).then(() => setView("list"));
+        const creds = getPlatformCreds(config, chosen.id);
+        setPendingPlatform(chosen.id);
+        setPlatformKeyDraft(creds?.apiKey ?? "");
+        setPlatformSecretDraft(creds?.apiSecret ?? "");
+        setPlatformFieldIdx(0);
+        setNotice(null);
+        setView("platformcreds");
         return;
       }
       return;
     }
 
-    if (view === "apikey") {
+    if (view === "platformcreds") {
       if (key.escape) {
-        setView("list");
+        setNotice(null);
+        setView("platform");
         return;
       }
-      if (key.tab) {
-        setApiKeyVisible((v) => !v);
+      if (key.tab || key.upArrow || key.downArrow) {
+        setPlatformFieldIdx((i) => (i === 0 ? 1 : 0));
         return;
       }
       if (key.return) {
-        const trimmed = apiKeyDraft.trim();
-        persist({ apiKey: trimmed.length > 0 ? trimmed : undefined }).then(() => setView("list"));
+        if (platformFieldIdx === 0) {
+          setPlatformFieldIdx(1);
+          return;
+        }
+        savePlatformCreds();
         return;
       }
       if (key.backspace || key.delete) {
-        setApiKeyDraft((d) => d.slice(0, -1));
+        if (platformFieldIdx === 0) setPlatformKeyDraft((d) => d.slice(0, -1));
+        else setPlatformSecretDraft((d) => d.slice(0, -1));
         return;
       }
       if (!key.ctrl && !key.meta && input) {
         const sanitized = input.replace(/[\r\n]/g, "");
         if (sanitized) {
-          setApiKeyDraft((d) => d + sanitized);
+          if (platformFieldIdx === 0) setPlatformKeyDraft((d) => d + sanitized);
+          else setPlatformSecretDraft((d) => d + sanitized);
         }
         return;
       }
+      return;
+    }
+
+    if (view === "network") {
+      if (key.escape) {
+        setView("list");
+        return;
+      }
+      if (key.upArrow) {
+        setSubIdx((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setSubIdx((i) => Math.min(NETWORKS.length - 1, i + 1));
+        return;
+      }
+      if (key.return) {
+        const chosen = NETWORKS[subIdx];
+        if (!chosen) return;
+        persist({ network: chosen.id }).then(() => setView("list"));
+        return;
+      }
+      return;
     }
   });
 
@@ -264,9 +382,11 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
       <Text dimColor>
         {view === "list"
           ? "Up/Down move  Enter edit  Esc close"
-          : view === "apikey"
-            ? <Text>Type to edit  <Text color="cyan">Tab</Text> toggle mask  <Text color="cyan">Enter</Text> save  <Text color="cyan">Esc</Text> cancel</Text>
-            : <Text>Up/Down move  <Text color="cyan">Enter</Text> select  <Text color="cyan">Esc</Text> back</Text>}
+          : view === "providerkey"
+            ? <Text>Type to edit  <Text color="cyan">Tab</Text> toggle mask  <Text color="cyan">Enter</Text> save  <Text color="cyan">Esc</Text> back</Text>
+            : view === "platformcreds"
+              ? <Text>Type to edit  <Text color="cyan">Tab</Text> switch field  <Text color="cyan">Enter</Text> next/save  <Text color="cyan">Esc</Text> back</Text>
+              : <Text>Up/Down move  <Text color="cyan">Enter</Text> select  <Text color="cyan">Esc</Text> back</Text>}
       </Text>
     </Box>
   );
@@ -277,16 +397,17 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
     </Box>
   );
 
-  const fieldValue = (id: FieldId): { text: string; isDefault: boolean; isSet: boolean } => {
-    if (id === "apikey") {
-      return { text: maskApiKey(config.apiKey), isDefault: false, isSet: !!config.apiKey };
-    }
+  const fieldValue = (
+    id: FieldId,
+  ): { text: string; isDefault: boolean; isSet: boolean; suffix?: string } => {
     if (id === "provider") {
       const effectiveValue = effective.provider;
+      const hasKey = !!getProviderApiKey(config, effectiveValue);
       return {
         text: effectiveValue ?? "(not set)",
         isDefault: !config.provider && !!effectiveValue,
         isSet: !!effectiveValue,
+        suffix: effectiveValue ? (hasKey ? "key set" : "no key") : undefined,
       };
     }
     if (id === "model") {
@@ -299,10 +420,20 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
     }
     if (id === "platform") {
       const effectiveValue = effective.platform;
+      const hasKey = !!getPlatformCreds(config, effectiveValue);
       return {
         text: effectiveValue ?? "(not set)",
         isDefault: !config.platform && !!effectiveValue,
-        isSet: !!effectiveValue,
+        isSet: !!effectiveValue && hasKey,
+        suffix: effectiveValue ? (hasKey ? "key set" : "no key") : undefined,
+      };
+    }
+    if (id === "network") {
+      const value = getEffectiveNetwork(config);
+      return {
+        text: value,
+        isDefault: !config.network,
+        isSet: true,
       };
     }
     return { text: "", isDefault: false, isSet: false };
@@ -342,6 +473,11 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
                 {value.isDefault ? (
                   <Text color="magenta">{"  (default)"}</Text>
                 ) : null}
+                {value.suffix ? (
+                  <Text color={value.suffix === "no key" ? "yellow" : "green"}>
+                    {"  " + value.suffix}
+                  </Text>
+                ) : null}
               </Box>
             );
           })}
@@ -367,6 +503,7 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
               const selected = i === subIdx;
               const current = p.id === effective.provider;
               const fromDefault = current && !config.provider;
+              const hasKey = !!getProviderApiKey(config, p.id);
               return (
                 <Box key={p.id}>
                   <Box width={4}>
@@ -377,12 +514,42 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
                   </Text>
                   {current ? <Text dimColor>{"  (current)"}</Text> : null}
                   {fromDefault ? <Text color="magenta">{"  (default)"}</Text> : null}
+                  <Text color={hasKey ? "green" : "yellow"}>{hasKey ? "  key set" : "  no key"}</Text>
                 </Box>
               );
             })}
           </Box>
         </Box>
-        {renderFooter(`${providers.length} provider${providers.length === 1 ? "" : "s"}`)}
+        {renderFooter(`${providers.length} provider${providers.length === 1 ? "" : "s"}  —  Enter to set its API key`)}
+      </Box>
+    );
+  }
+
+  if (view === "providerkey") {
+    return (
+      <Box flexDirection="column" height={height} width={width}>
+        {renderHeader()}
+        <Box flexDirection="column" flexGrow={1} paddingX={2} paddingY={1}>
+          <Text color="cyan" bold>API Key</Text>
+          <Text dimColor>Provider: {pendingProvider}</Text>
+          <Box marginTop={1}>
+            <Text dimColor>Key: </Text>
+            <Text color="white">
+              {providerKeyDraft.length === 0
+                ? ""
+                : providerKeyVisible
+                  ? providerKeyDraft
+                  : "*".repeat(providerKeyDraft.length)}
+            </Text>
+            <Text inverse> </Text>
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>
+              {providerKeyVisible ? "Visible (Tab to mask)" : "Masked (Tab to reveal)"}
+            </Text>
+          </Box>
+        </Box>
+        {renderFooter(<Text><Text color="cyan">Enter</Text> save  <Text color="cyan">Esc</Text> back  <Text color="cyan">Tab</Text> toggle mask</Text>)}
       </Box>
     );
   }
@@ -430,6 +597,7 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
               const selected = i === subIdx;
               const current = p.id === effective.platform;
               const fromDefault = current && !config.platform;
+              const hasKey = !!getPlatformCreds(config, p.id);
               return (
                 <Box key={p.id}>
                   <Box width={4}>
@@ -440,39 +608,84 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
                   </Text>
                   {current ? <Text dimColor>{"  (current)"}</Text> : null}
                   {fromDefault ? <Text color="magenta">{"  (default)"}</Text> : null}
+                  <Text color={hasKey ? "green" : "yellow"}>{hasKey ? "  key set" : "  no key"}</Text>
                 </Box>
               );
             })}
           </Box>
         </Box>
-        {renderFooter(`${platforms.length} platform${platforms.length === 1 ? "" : "s"}`)}
+        {renderFooter("Enter to set its API key + secret (required)")}
       </Box>
     );
   }
 
-  return (
-    <Box flexDirection="column" height={height} width={width}>
-      {renderHeader()}
-      <Box flexDirection="column" flexGrow={1} paddingX={2} paddingY={1}>
-        <Text color="cyan" bold>Edit API Key</Text>
-        <Box marginTop={1}>
-          <Text dimColor>Key: </Text>
-          <Text color="white">
-            {apiKeyDraft.length === 0
-              ? ""
-              : apiKeyVisible
-                ? apiKeyDraft
-                : "*".repeat(apiKeyDraft.length)}
-          </Text>
-          <Text inverse> </Text>
+  if (view === "platformcreds") {
+    const renderField = (label: string, value: string, active: boolean) => (
+      <Box marginTop={1}>
+        <Box width={10}>
+          <Text color={active ? "cyanBright" : "white"} bold={active}>{label}</Text>
         </Box>
-        <Box marginTop={1}>
-          <Text dimColor>
-            {apiKeyVisible ? "Visible (Tab to mask)" : "Masked (Tab to reveal)"}
-          </Text>
-        </Box>
+        <Text color="white">
+          {value.length === 0
+            ? ""
+            : active
+              ? value
+              : "********" + (value.length > 4 ? value.slice(-4) : "")}
+        </Text>
+        {active ? <Text inverse> </Text> : null}
       </Box>
-      {renderFooter(<Text><Text color="cyan">Enter</Text> save  <Text color="cyan">Esc</Text> cancel  <Text color="cyan">Tab</Text> toggle mask</Text>)}
-    </Box>
-  );
+    );
+    return (
+      <Box flexDirection="column" height={height} width={width}>
+        {renderHeader()}
+        <Box flexDirection="column" flexGrow={1} paddingX={2} paddingY={1}>
+          <Text color="cyan" bold>{pendingPlatform} Credentials</Text>
+          <Text dimColor>Both fields are required to use this platform.</Text>
+          {renderField("API key", platformKeyDraft, platformFieldIdx === 0)}
+          {renderField("Secret", platformSecretDraft, platformFieldIdx === 1)}
+          {notice ? (
+            <Box marginTop={1}>
+              <Text color="yellow">{notice}</Text>
+            </Box>
+          ) : null}
+        </Box>
+        {renderFooter(<Text><Text color="cyan">Tab</Text> switch field  <Text color="cyan">Enter</Text> next/save  <Text color="cyan">Esc</Text> back</Text>)}
+      </Box>
+    );
+  }
+
+  if (view === "network") {
+    const currentNetwork = getEffectiveNetwork(config);
+    return (
+      <Box flexDirection="column" height={height} width={width}>
+        {renderHeader()}
+        <Box flexDirection="column" flexGrow={1} paddingX={2} paddingY={1}>
+          <Text color="cyan" bold>Select Bybit Network</Text>
+          <Text dimColor>Trade commands hit this network.</Text>
+          <Box marginTop={1} flexDirection="column">
+            {NETWORKS.map((n, i) => {
+              const selected = i === subIdx;
+              const current = n.id === currentNetwork;
+              const fromDefault = current && !config.network;
+              return (
+                <Box key={n.id}>
+                  <Box width={4}>
+                    <Text color="cyan" bold>{selected ? ">" : " "}</Text>
+                  </Box>
+                  <Text color={selected ? "cyanBright" : "white"} bold={selected}>
+                    {n.label}
+                  </Text>
+                  {current ? <Text dimColor>{"  (current)"}</Text> : null}
+                  {fromDefault ? <Text color="magenta">{"  (default)"}</Text> : null}
+                </Box>
+              );
+            })}
+          </Box>
+        </Box>
+        {renderFooter("Default: mainnet")}
+      </Box>
+    );
+  }
+
+  return null;
 }

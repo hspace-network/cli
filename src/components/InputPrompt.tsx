@@ -4,10 +4,12 @@ import type { CommandHistory } from "../utils/history.js";
 
 interface InputPromptProps {
   onSubmit: (value: string) => void;
+  onClearActiveAgent?: () => void;
   confirmPrompt?: string | null;
   isDisabled?: boolean;
   history: CommandHistory;
   suggestions?: string[];
+  activeAgent?: string | null;
 }
 
 const ASK_PREFIX = "/ask";
@@ -44,10 +46,12 @@ function renderHighlightedSlice(slice: string, fullValue: string, sliceStart: nu
 
 export function InputPrompt({
   onSubmit,
+  onClearActiveAgent,
   confirmPrompt,
   isDisabled,
   history,
   suggestions,
+  activeAgent,
 }: InputPromptProps) {
   const [value, setValue] = useState("");
   const [cursor, setCursor] = useState(0);
@@ -82,13 +86,13 @@ export function InputPrompt({
       }
 
       if (key.upArrow) {
-        if (confirmPrompt) return;
+        if (key.shift || confirmPrompt) return;
         const prev = history.prev(value);
         if (prev !== undefined) setBoth(prev);
         return;
       }
       if (key.downArrow) {
-        if (confirmPrompt) return;
+        if (key.shift || confirmPrompt) return;
         const next = history.next();
         if (next !== undefined) setBoth(next);
         return;
@@ -97,6 +101,11 @@ export function InputPrompt({
       if (key.tab && !key.shift && !confirmPrompt && suggestions && value.length > 0) {
         const match = suggestions.find((s) => s.startsWith(value));
         if (match && match !== value) setBoth(match);
+        return;
+      }
+
+      if (key.escape && !confirmPrompt && !value && activeAgent) {
+        onClearActiveAgent?.();
         return;
       }
 
@@ -161,10 +170,19 @@ export function InputPrompt({
     <Box>
       <Text color="cyan">agent </Text>
       <Text bold>{"> "}</Text>
+      {activeAgent ? (
+        <>
+          <Text color="cyanBright" bold>{activeAgent}</Text>
+          <Text bold>{" > "}</Text>
+        </>
+      ) : null}
       <Text>{renderHighlightedSlice(before, value, 0)}</Text>
       <Text inverse color={cursorIsAsk ? "cyan" : undefined}>{at}</Text>
       <Text>{renderHighlightedSlice(after, value, cursor + 1)}</Text>
       {ghostSuffix ? <Text dimColor>{ghostSuffix}</Text> : null}
+      {activeAgent ? (
+        <Text dimColor>{"  (back / Esc to clear)"}</Text>
+      ) : null}
     </Box>
   );
 }

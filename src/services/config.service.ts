@@ -37,13 +37,32 @@ export interface NodeDefaults {
   platform?: string;
 }
 
+export interface Strategy {
+  id: string;
+  label?: string;
+  body: string;
+}
+
+export type BybitNetwork = "mainnet" | "testnet";
+
+export interface PlatformCreds {
+  apiKey: string;
+  apiSecret: string;
+}
+
 export interface CliConfig {
   nodeUrl: string;
   provider?: string;
   model?: string;
-  apiKey?: string;
+  /** LLM API keys keyed by provider id. */
+  apiKeys?: Record<string, string>;
+  /** Trading platform credentials keyed by platform id. */
+  platformKeys?: Record<string, PlatformCreds>;
   platform?: string;
+  network?: BybitNetwork;
 }
+
+export const DEFAULT_NETWORK: BybitNetwork = "mainnet";
 
 export interface NodeConfig {
   version: string;
@@ -52,6 +71,7 @@ export interface NodeConfig {
   intervals: string[];
   providers: Provider[];
   platforms: Platform[];
+  strategies: Strategy[];
   defaults: NodeDefaults;
 }
 
@@ -77,6 +97,29 @@ function pickString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function parseApiKeys(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    const key = pickString(v);
+    if (k && key) out[k] = key;
+  }
+  return out;
+}
+
+function parsePlatformKeys(value: unknown): Record<string, PlatformCreds> {
+  const out: Record<string, PlatformCreds> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (!k || !v || typeof v !== "object") continue;
+    const entry = v as Partial<PlatformCreds>;
+    const apiKey = pickString(entry.apiKey);
+    const apiSecret = pickString(entry.apiSecret);
+    if (apiKey && apiSecret) out[k] = { apiKey, apiSecret };
+  }
+  return out;
+}
+
 export async function loadCliConfig(): Promise<CliConfig> {
   const path = getCliConfigPath();
   if (!(await fileExists(path))) {
@@ -94,10 +137,23 @@ export async function loadCliConfig(): Promise<CliConfig> {
     if (provider) cfg.provider = provider;
     const model = pickString(raw.model);
     if (model) cfg.model = model;
-    const apiKey = pickString(raw.apiKey);
-    if (apiKey) cfg.apiKey = apiKey;
     const platform = pickString(raw.platform);
     if (platform) cfg.platform = platform;
+    if (raw.network === "mainnet" || raw.network === "testnet") {
+      cfg.network = raw.network;
+    }
+
+    const apiKeys = parseApiKeys(raw.apiKeys);
+    // Migrate a legacy single apiKey onto the selected provider.
+    const legacyKey = pickString((raw as { apiKey?: unknown }).apiKey);
+    if (legacyKey && cfg.provider && apiKeys[cfg.provider] === undefined) {
+      apiKeys[cfg.provider] = legacyKey;
+    }
+    if (Object.keys(apiKeys).length > 0) cfg.apiKeys = apiKeys;
+
+    const platformKeys = parsePlatformKeys(raw.platformKeys);
+    if (Object.keys(platformKeys).length > 0) cfg.platformKeys = platformKeys;
+
     return cfg;
   } catch {
     return { nodeUrl: DEFAULT_NODE_URL };
@@ -128,6 +184,26 @@ export async function updateCliConfig(patch: Partial<CliConfig>): Promise<CliCon
 
   await saveCliConfig(next);
   return next;
+}
+
+export function getEffectiveNetwork(cfg: CliConfig): BybitNetwork {
+  return cfg.network === "testnet" ? "testnet" : "mainnet";
+}
+
+export function getProviderApiKey(
+  cfg: CliConfig,
+  providerId: string | undefined,
+): string | undefined {
+  if (!providerId) return undefined;
+  return cfg.apiKeys?.[providerId];
+}
+
+export function getPlatformCreds(
+  cfg: CliConfig,
+  platformId: string | undefined,
+): PlatformCreds | undefined {
+  if (!platformId) return undefined;
+  return cfg.platformKeys?.[platformId];
 }
 
 export async function setNodeUrl(url: string): Promise<CliConfig> {
@@ -227,6 +303,21 @@ function parsePlatforms(value: unknown): Platform[] {
   return platforms;
 }
 
+function parseStrategies(value: unknown): Strategy[] {
+  if (!Array.isArray(value)) return [];
+  const strategies: Strategy[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Partial<Strategy>;
+    if (typeof e.id !== "string" || e.id.length === 0) continue;
+    if (typeof e.body !== "string" || e.body.length === 0) continue;
+    const strategy: Strategy = { id: e.id, body: e.body };
+    if (typeof e.label === "string" && e.label.length > 0) strategy.label = e.label;
+    strategies.push(strategy);
+  }
+  return strategies;
+}
+
 function parseDefaults(value: unknown): NodeDefaults {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const obj = value as Record<string, unknown>;
@@ -281,6 +372,7 @@ export async function fetchNodeConfig(url: string): Promise<NodeConfig> {
     intervals: parseIntervals(cfg.intervals),
     providers: parseProviders(cfg.providers),
     platforms: parsePlatforms(cfg.platforms),
+    strategies: parseStrategies(cfg.strategies),
     defaults: parseDefaults(cfg.defaults),
   };
 }

@@ -10,10 +10,15 @@ const GROUPS: CommandGroup[] = [
   {
     title: "Agents",
     commands: [
+      ["use <name>", "Set an active agent"],
+      ["back / unuse", "Clear the active agent (Esc when input is empty)"],
       ["create <name>", "Create a new agent"],
       ["list", "List all agents"],
       ["info <name>", "Show agent details"],
-      ["edit <name>", "Open the agent strategy in the built-in editor"],
+      ["strategy", "Browse and edit strategies (builtin + saved)"],
+      ["set strategy <name>", "Assign a strategy (or: set strategy <agent> <name>)"],
+      ["cap <name> [usd]", "Show or set the agent's per-trade spending cap"],
+      ["history <name>", "Show the agent's discussion decisions"],
       ["delete <name>", "Delete an agent"],
     ],
   },
@@ -22,10 +27,23 @@ const GROUPS: CommandGroup[] = [
     commands: [["/ask <question>", "Ask the configured LLM (uses agent strategy if available)"]],
   },
   {
-    title: "Trading",
+    title: "Agentic Trading",
     commands: [
       ["run <name> [market] [interval]", "Join an agent to a market room at a pace"],
+      ["myrooms [name]", "Show the rooms an agent is currently in"],
       ["stop <name> [room]", "Leave one of the agent's active rooms"],
+      ["stop all", "Leave every room for the active agent (all agents if none)"],
+    ],
+  },
+  {
+    title: "Manual Trading",
+    commands: [
+      ["/long <name> <market> <size>", "Open a long [@px] [sl=px] [tp=px]"],
+      ["/short <name> <market> <size>", "Open a short [@px] [sl=px] [tp=px]"],
+      ["/close <name> <market> [size]", "Close (reduce-only)"],
+      ["pos <name>", "Live positions table (Esc to close)"],
+      ["/cancel <name> <market> <id>", "Cancel by oid or cloid"],
+      ["/lev <name> <market> <n>", "Set cross leverage"],
     ],
   },
   {
@@ -33,13 +51,15 @@ const GROUPS: CommandGroup[] = [
     commands: [
       ["node", "Show current node URL and status"],
       ["node set <url>", "Point CLI at a node and refresh config"],
+      ["GET /score?agent=<name>", "Public API — look up an agent's excellence score"],
       ["rooms", "List rooms delivered by the connected node"],
+      ["logs", "Open the live agent discussion chat (Esc to close)"],
     ],
   },
   {
     title: "System",
     commands: [
-      ["settings", "Open interactive settings (provider, model, API key, platform)"],
+      ["settings", "Open interactive settings (provider, model, API key, network)"],
       ["dir", "Show agents directory path"],
       ["clear", "Clear the output pane"],
       ["help", "Show this help message"],
@@ -53,7 +73,6 @@ const CMD_COL = 32;
 const SHORTCUTS: [string, string][] = [
   ["PageUp / PageDown", "Scroll output by 5 lines"],
   ["Shift+Up / Shift+Down", "Scroll output by 1 line"],
-  ["Ctrl+U / Ctrl+D", "Scroll output by 10 lines"],
   ["Ctrl+G", "Jump back to live output"],
   ["Ctrl+L", "Clear the output pane"],
   ["Ctrl+C", "Exit the CLI"],

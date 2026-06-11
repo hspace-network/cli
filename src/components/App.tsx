@@ -9,12 +9,16 @@ import { InputPrompt } from "./InputPrompt.js";
 import { Editor } from "./Editor.js";
 import { SettingsScreen } from "./SettingsScreen.js";
 import { RunSelector, type SelectorResult } from "./RunSelector.js";
+import { PosScreen } from "./PosScreen.js";
+import { LogsScreen } from "./LogsScreen.js";
+import { StrategyScreen } from "./StrategyScreen.js";
 import { parseInput } from "../cli/parser.js";
 import {
   getCommand,
   getCommandNames,
   isInteractiveResult,
   type PendingPrompt,
+  type PosScreenOpen,
   type RunSelectorOpen,
 } from "../commands/index.js";
 import { listAgents } from "../services/agent.service.js";
@@ -32,6 +36,14 @@ import {
   isRunning,
   subscribeRunsCache,
 } from "../services/runs.cache.js";
+import {
+  getActiveAgent,
+  clearActiveAgent,
+  subscribeActiveAgent,
+} from "../services/active-agent.service.js";
+import { subscribeDiscussion, type ActionKind } from "../services/discussion.bus.js";
+import { formatPositionTableLines } from "../utils/position-table.js";
+import { initDiscussionStore } from "../services/discussion.store.js";
 import { log } from "../utils/logger.js";
 import { getAgentsRoot } from "../utils/fs.js";
 import { CommandHistory } from "../utils/history.js";
@@ -42,6 +54,23 @@ interface EditorFile {
   path: string;
   name: string;
 }
+
+const AGENT_FIRST_COMMANDS = new Set<string>([
+  "info",
+  "delete",
+  "cap",
+  "history",
+  "run",
+  "stop",
+  "myrooms",
+  "pos",
+  "/ask",
+  "/long",
+  "/short",
+  "/close",
+  "/cancel",
+  "/lev",
+]);
 
 export function App() {
   const { exit } = useApp();
@@ -63,6 +92,9 @@ export function App() {
   const [editorFile, setEditorFile] = useState<EditorFile | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [runSelector, setRunSelector] = useState<RunSelectorOpen | null>(null);
+  const [posScreen, setPosScreen] = useState<PosScreenOpen | null>(null);
+  const [logsOpen, setLogsOpen] = useState(false);
+  const [strategyOpen, setStrategyOpen] = useState(false);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [nodeUrl, setNodeUrl] = useState<string>("");
@@ -70,7 +102,14 @@ export function App() {
   const [nodeRoomCount, setNodeRoomCount] = useState<number>(0);
   const [busyMessage, setBusyMessage] = useState<string | null>(null);
   const [streamingText, setStreamingText] = useState<string>("");
+  const [activeAgent, setActiveAgentState] = useState<string | null>(getActiveAgent());
   const streamingRef = useRef<string>("");
+
+  useEffect(() => {
+    return subscribeActiveAgent(() => {
+      setActiveAgentState(getActiveAgent());
+    });
+  }, []);
 
   const historyRef = useRef(new CommandHistory());
 
@@ -93,20 +132,64 @@ export function App() {
       const agentNames = agents.map((a) => a.name);
       const cached = getCachedNodeConfig();
       const marketIds = cached?.markets?.map((m) => m.id) ?? [];
-      const completions = [
+
+      const AGENT_CMDS_BARE = [
+        "info",
+        "delete",
+        "cap",
+        "history",
+        "run",
+        "stop",
+        "myrooms",
+        "pos",
+        "use",
+      ];
+      const AGENT_CMDS_SLASH = [
+        "/long",
+        "/short",
+        "/close",
+        "/cancel",
+        "/lev",
+      ];
+
+      const strategyIds = cached?.strategies?.map((s) => s.id) ?? [];
+
+      const completions: string[] = [
         ...commandNames,
+        "strategy",
+        "set strategy",
+        ...strategyIds.map((id) => `set strategy ${id}`),
         ...agentNames.flatMap((name) =>
-          ["info", "edit", "delete", "run", "stop"].map((cmd) => `${cmd} ${name}`),
+          [...AGENT_CMDS_BARE, ...AGENT_CMDS_SLASH].map((cmd) => `${cmd} ${name}`),
         ),
         ...agentNames.flatMap((name) =>
-          marketIds.map((m) => `run ${name} ${m}`),
+          marketIds.flatMap((m) => [
+            `run ${name} ${m}`,
+            `/long ${name} ${m}`,
+            `/short ${name} ${m}`,
+            `/close ${name} ${m}`,
+            `/cancel ${name} ${m}`,
+            `/lev ${name} ${m}`,
+          ]),
         ),
       ];
+
+      if (activeAgent) {
+        for (const m of marketIds) {
+          completions.push(`/long ${m}`);
+          completions.push(`/short ${m}`);
+          completions.push(`/close ${m}`);
+          completions.push(`/cancel ${m}`);
+          completions.push(`/lev ${m}`);
+          completions.push(`run ${m}`);
+        }
+      }
+
       setSuggestions(completions);
     } catch {
       // ignore errors reading stats
     }
-  }, []);
+  }, [activeAgent]);
 
   useEffect(() => {
     refreshStats();
@@ -148,14 +231,6 @@ export function App() {
       const statusCol = (s: string, color: "green" | "yellow" | "red") =>
         chalk[color](s.padEnd(10));
 
-      const apiOk = !!cfg.apiKey;
-      const apiRow =
-        "    " +
-        labelCol("API Key") +
-        (apiOk
-          ? statusCol("set", "green")
-          : statusCol("not set", "yellow") + chalk.dim('Run "settings" to add one.'));
-
       const nodeRow =
         "    " +
         labelCol("Node") +
@@ -166,7 +241,6 @@ export function App() {
       setLines((prev) => [
         ...prev,
         chalk.cyanBright.bold("  Status"),
-        apiRow,
         nodeRow,
         "",
       ]);
@@ -242,8 +316,33 @@ export function App() {
     setScrollOffset(0);
   }, []);
 
+  useEffect(() => {
+    initDiscussionStore();
+    const tradeKinds = new Set<ActionKind>(["open", "flip", "add", "reduce", "close"]);
+    return subscribeDiscussion((event) => {
+      if (event.type !== "action") return;
+      if (!tradeKinds.has(event.kind)) return;
+      const out: string[] = [
+        "",
+        chalk.green("  ▸ ") +
+          chalk.cyanBright(event.agentName) +
+          " " +
+          chalk.white(event.message),
+      ];
+      for (const line of formatPositionTableLines(event.position)) {
+        out.push(chalk.dim(line));
+      }
+      appendLines(...out);
+    });
+  }, [appendLines]);
+
   useInput(
     (input, key) => {
+      if (pendingPrompt && key.escape) {
+        setPendingPrompt(null);
+        appendLines(chalk.dim("  Cancelled."));
+        return;
+      }
       if (key.ctrl && input === "l") {
         clearScreen();
         return;
@@ -268,20 +367,12 @@ export function App() {
         setScrollOffset((p) => Math.max(0, p - 1));
         return;
       }
-      if (key.ctrl && input === "u") {
-        setScrollOffset((p) => p + 10);
-        return;
-      }
-      if (key.ctrl && input === "d") {
-        setScrollOffset((p) => Math.max(0, p - 10));
-        return;
-      }
       if (key.ctrl && input === "g") {
         setScrollOffset(0);
         return;
       }
     },
-    { isActive: !editorFile && !settingsOpen && !runSelector }
+    { isActive: !editorFile && !settingsOpen && !runSelector && !posScreen && !logsOpen && !strategyOpen }
   );
 
   const handleSubmit = useCallback(
@@ -303,7 +394,11 @@ export function App() {
       const echoBody = isAskCmd
         ? chalk.cyan("/ask") + trimmed.slice(4)
         : trimmed;
-      appendLines("", chalk.cyan("agent") + chalk.bold(" > ") + echoBody);
+      const promptPrefix =
+        chalk.cyan("agent") +
+        chalk.bold(" > ") +
+        (activeAgent ? chalk.cyanBright.bold(activeAgent) + chalk.bold(" > ") : "");
+      appendLines("", promptPrefix + echoBody);
 
       const lower = trimmed.toLowerCase();
 
@@ -336,11 +431,31 @@ export function App() {
         return;
       }
 
+      let effectiveArgs = parsed.args;
+      if (activeAgent && AGENT_FIRST_COMMANDS.has(parsed.command)) {
+        try {
+          const agents = await listAgents();
+          const names = new Set(agents.map((a) => a.name));
+          const first = parsed.args[0];
+          if (!first || !names.has(first)) {
+            effectiveArgs = [activeAgent, ...parsed.args];
+          }
+        } catch {
+          // If listing fails, fall back to user-typed args.
+        }
+      }
+
+      const prependBlank = (lines: string[]): string[] => {
+        if (lines.length === 0) return lines;
+        if (lines[0] === "") return lines;
+        return ["", ...lines];
+      };
+
       try {
-        const result = await handler(parsed.args);
+        const result = await handler(effectiveArgs);
 
         if (isInteractiveResult(result)) {
-          appendLines(...result.lines);
+          if (result.lines.length > 0) appendLines(...prependBlank(result.lines));
           if (result.prompt) {
             setPendingPrompt(result.prompt);
           }
@@ -353,8 +468,18 @@ export function App() {
           if (result.openRunSelector) {
             setRunSelector(result.openRunSelector);
           }
+          if (result.openPosScreen) {
+            setPosScreen(result.openPosScreen);
+          }
+          if (result.openLogs) {
+            setLogsOpen(true);
+          }
+          if (result.openStrategyScreen) {
+            setStrategyOpen(true);
+          }
           if (result.stream) {
             const session = result.stream;
+            appendLines("");
             if (session.prefixLine) {
               appendLines(session.prefixLine);
             }
@@ -386,7 +511,7 @@ export function App() {
               fail: (errorLine: string) => {
                 setBusy(null);
                 flush();
-                appendLines(errorLine);
+                appendLines("", errorLine);
               },
             };
 
@@ -397,14 +522,14 @@ export function App() {
           return;
         }
 
-        appendLines(...result);
+        if (result.length > 0) appendLines(...prependBlank(result));
       } catch (err) {
-        appendLines(log.error((err as Error).message));
+        appendLines("", log.error((err as Error).message));
       }
 
       await refreshStats();
     },
-    [pendingPrompt, appendLines, refreshStats, exit, clearScreen]
+    [pendingPrompt, appendLines, refreshStats, exit, clearScreen, activeAgent]
   );
 
   const termHeight = rows || process.stdout.rows || 24;
@@ -484,6 +609,53 @@ export function App() {
     );
   }
 
+  if (posScreen) {
+    return (
+      <Box flexDirection="column" height={termHeight} width={termWidth}>
+        <PosScreen
+          height={termHeight}
+          width={termWidth}
+          agentName={posScreen.agentName}
+          onClose={() => {
+            setPosScreen(null);
+            appendLines(log.dim("  Positions closed."));
+          }}
+        />
+      </Box>
+    );
+  }
+
+  if (logsOpen) {
+    return (
+      <Box flexDirection="column" height={termHeight} width={termWidth}>
+        <LogsScreen
+          height={termHeight}
+          width={termWidth}
+          onClose={() => {
+            setLogsOpen(false);
+            appendLines(log.dim("  Logs closed."));
+          }}
+        />
+      </Box>
+    );
+  }
+
+  if (strategyOpen) {
+    return (
+      <Box flexDirection="column" height={termHeight} width={termWidth}>
+        <StrategyScreen
+          height={termHeight}
+          width={termWidth}
+          onClose={() => {
+            setStrategyOpen(false);
+            appendLines(log.dim("  Strategies closed."));
+          }}
+          onSaved={(msg) => appendLines(log.success(msg))}
+        />
+      </Box>
+    );
+  }
+
   return (
     <Box flexDirection="column" height={termHeight} width={termWidth}>
       <StatusBar
@@ -511,9 +683,16 @@ export function App() {
       )}
       <InputPrompt
         onSubmit={handleSubmit}
+        onClearActiveAgent={() => {
+          const was = getActiveAgent();
+          if (!was) return;
+          clearActiveAgent();
+          appendLines(chalk.dim(`  Cleared active agent (was ${was}).`));
+        }}
         confirmPrompt={pendingPrompt?.prompt ?? null}
         history={historyRef.current}
         suggestions={suggestions}
+        activeAgent={activeAgent}
       />
     </Box>
   );

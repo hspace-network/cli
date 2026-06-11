@@ -1,7 +1,8 @@
 import { createCommand } from "./create.js";
 import { listCommand } from "./list.js";
 import { infoCommand } from "./info.js";
-import { editCommand } from "./edit.js";
+import { strategyCommand } from "./strategy.js";
+import { setStrategyCommand } from "./set-strategy.js";
 import { deleteCommand } from "./delete.js";
 import { helpCommand } from "./help.js";
 import { nodeCommand } from "./node.js";
@@ -10,6 +11,18 @@ import { settingsCommand } from "./settings.js";
 import { askCommand } from "./ask.js";
 import { runCommand } from "./run.js";
 import { stopCommand } from "./stop.js";
+import { stopallCommand } from "./stopall.js";
+import { myroomsCommand } from "./myrooms.js";
+import { useCommand, unuseCommand } from "./use.js";
+import { longCommand } from "./long.js";
+import { shortCommand } from "./short.js";
+import { closeCommand } from "./close.js";
+import { posCommand } from "./pos.js";
+import { cancelCommand } from "./cancel.js";
+import { levCommand } from "./lev.js";
+import { capCommand } from "./cap.js";
+import { historyCommand } from "./history.js";
+import { logsCommand } from "./logs.js";
 
 export interface PendingPrompt {
   prompt: string;
@@ -33,12 +46,19 @@ export interface RunSelectorOpen {
   initialMarketId?: string;
 }
 
+export interface PosScreenOpen {
+  agentName: string;
+}
+
 export interface InteractiveResult {
   lines: string[];
   prompt?: PendingPrompt;
   openEditor?: { filePath: string; fileName: string };
   openSettings?: true;
   openRunSelector?: RunSelectorOpen;
+  openPosScreen?: PosScreenOpen;
+  openLogs?: true;
+  openStrategyScreen?: true;
   stream?: StreamSession;
 }
 
@@ -51,15 +71,31 @@ const commands: Record<string, CommandHandler> = {
   create: createCommand,
   list: () => listCommand(),
   info: infoCommand,
-  edit: editCommand,
+  strategy: () => strategyCommand(),
+  "set strategy": setStrategyCommand,
   delete: deleteCommand,
   node: nodeCommand,
   rooms: () => roomsCommand(),
+  logs: () => logsCommand(),
   settings: () => settingsCommand(),
   help: () => helpCommand(),
   run: runCommand,
   stop: stopCommand,
+  stopall: () => stopallCommand(),
+  myrooms: myroomsCommand,
+  use: useCommand,
+  unuse: () => unuseCommand(),
+  back: () => unuseCommand(),
+  cap: capCommand,
+  history: historyCommand,
   "/ask": askCommand,
+  "/long": longCommand,
+  "/short": shortCommand,
+  "/close": closeCommand,
+  pos: posCommand,
+  "/pos": posCommand,
+  "/cancel": cancelCommand,
+  "/lev": levCommand,
 };
 
 export function getCommand(name: string): CommandHandler | undefined {

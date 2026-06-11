@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile, rm, readdir, stat } from "node:fs/promises";
+import { mkdir, readFile, writeFile, appendFile, rm, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -13,12 +13,28 @@ export function getAgentDir(name: string): string {
   return join(getAgentsRoot(), name);
 }
 
+export function getAgentHistoryPath(name: string): string {
+  return join(getAgentDir(name), "history.jsonl");
+}
+
 export function getWalletsDir(): string {
   return join(getAgentsRoot(), WALLETS_DIR);
 }
 
 export function getCliConfigPath(): string {
   return join(getAgentsRoot(), "config.json");
+}
+
+export function getStrategiesDir(): string {
+  return join(getAgentsRoot(), "strategies");
+}
+
+export function getStrategyIndexPath(): string {
+  return join(getStrategiesDir(), "index.json");
+}
+
+export function getUserStrategyPath(id: string): string {
+  return join(getStrategiesDir(), `${id}.md`);
 }
 
 export function getWalletPath(name: string): string {
@@ -62,6 +78,10 @@ export async function writeJson(filePath: string, data: unknown): Promise<void> 
 
 export async function writeText(filePath: string, content: string): Promise<void> {
   await writeFile(filePath, content, "utf-8");
+}
+
+export async function appendText(filePath: string, content: string): Promise<void> {
+  await appendFile(filePath, content, "utf-8");
 }
 
 export async function removeDir(dirPath: string): Promise<void> {

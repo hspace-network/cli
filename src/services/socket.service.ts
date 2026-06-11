@@ -1,5 +1,6 @@
 import { io, type Socket } from "socket.io-client";
 import { getAuthHeader } from "./auth.service.js";
+import { attachDiscussionHandlers } from "./discussion.client.js";
 
 interface SocketEntry {
   socket: Socket;
@@ -43,6 +44,8 @@ async function getSocket(args: {
     reconnectionAttempts: 3,
     timeout: 8000,
   });
+
+  attachDiscussionHandlers(socket, args.agentName);
 
   await new Promise<void>((resolve, reject) => {
     const onConnect = () => {
