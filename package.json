@@ -1,6 +1,6 @@
 {
   "name": "hspace",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Autonomous Trading Agent Manager — Interactive CLI",
   "type": "module",
   "bin": {

@@ -1,6 +1,6 @@
 import { Box, Text } from "ink";
 
-const VERSION = "0.1.0";
+const VERSION = "0.1.2";
 
 export interface AgentStats {
   total: number;

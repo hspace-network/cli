@@ -9,6 +9,7 @@ import {
   cleanupStrategyDraft,
   setAgentStrategy,
   renameUserStrategy,
+  createUserStrategy,
   type StrategyEntry,
 } from "../services/strategy.service.js";
 import { getAgent } from "../services/agent.service.js";
@@ -36,8 +37,8 @@ export function StrategyScreen({ height, width, activeAgent, onClose, onSaved }:
   const [noticeTone, setNoticeTone] = useState<"success" | "error">("success");
   const [assignedId, setAssignedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [renaming, setRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState("");
+  const [textMode, setTextMode] = useState<null | "rename" | "create">(null);
+  const [textValue, setTextValue] = useState("");
 
   const refresh = async () => {
     const list = await listAllStrategies();
@@ -72,41 +73,68 @@ export function StrategyScreen({ height, width, activeAgent, onClose, onSaved }:
   useInput((input, key) => {
     if (editing) return;
 
-    if (renaming) {
+    if (textMode) {
       if (key.escape) {
-        setRenaming(false);
+        setTextMode(null);
         return;
       }
       if (key.return) {
-        const entry = entries[idx];
-        if (!entry) {
-          setRenaming(false);
-          return;
-        }
-        const value = renameValue;
-        void (async () => {
-          try {
-            const newId = await renameUserStrategy(entry.id, value);
-            setRenaming(false);
-            await refresh();
-            if (assignedId === entry.id) setAssignedId(newId);
-            setNoticeTone("success");
-            setNotice(`Renamed to "${value.trim()}" (${newId}).`);
-          } catch (err) {
-            setRenaming(false);
-            setNoticeTone("error");
-            setNotice((err as Error).message);
+        const value = textValue;
+        if (textMode === "rename") {
+          const entry = entries[idx];
+          if (!entry) {
+            setTextMode(null);
+            return;
           }
-        })();
+          void (async () => {
+            try {
+              const newId = await renameUserStrategy(entry.id, value);
+              setTextMode(null);
+              await refresh();
+              if (assignedId === entry.id) setAssignedId(newId);
+              setNoticeTone("success");
+              setNotice(`Renamed to "${value.trim()}" (${newId}).`);
+            } catch (err) {
+              setTextMode(null);
+              setNoticeTone("error");
+              setNotice((err as Error).message);
+            }
+          })();
+        } else {
+          void (async () => {
+            try {
+              const newId = await createUserStrategy(value);
+              const prep = await prepareStrategyEdit({
+                id: newId,
+                label: value.trim(),
+                body: "",
+                source: "user",
+              });
+              setTextMode(null);
+              await refresh();
+              setEditing({
+                filePath: prep.filePath,
+                fileName: prep.fileName,
+                isBuiltin: prep.isBuiltin,
+                builtinId: prep.builtinId,
+              });
+              setNotice(null);
+            } catch (err) {
+              setTextMode(null);
+              setNoticeTone("error");
+              setNotice((err as Error).message);
+            }
+          })();
+        }
         return;
       }
       if (key.backspace || key.delete) {
-        setRenameValue((d) => d.slice(0, -1));
+        setTextValue((d) => d.slice(0, -1));
         return;
       }
       if (!key.ctrl && !key.meta && input) {
         const sanitized = input.replace(/[\r\n]/g, "");
-        if (sanitized) setRenameValue((d) => d + sanitized);
+        if (sanitized) setTextValue((d) => d + sanitized);
         return;
       }
       return;
@@ -145,16 +173,22 @@ export function StrategyScreen({ height, width, activeAgent, onClose, onSaved }:
       })();
       return;
     }
+    if (input === "n") {
+      setTextValue("");
+      setTextMode("create");
+      setNotice(null);
+      return;
+    }
     if (input === "r" && entries.length > 0) {
       const entry = entries[idx];
       if (!entry) return;
       if (entry.source !== "user") {
         setNoticeTone("error");
-        setNotice("Only your own strategies can be renamed. Press Enter on a builtin to save your own copy first.");
+        setNotice("Only your own strategies can be renamed. Press n to create a new one, or Enter on a builtin to save your own copy.");
         return;
       }
-      setRenameValue(entry.label);
-      setRenaming(true);
+      setTextValue(entry.label);
+      setTextMode("rename");
       setNotice(null);
       return;
     }
@@ -234,17 +268,19 @@ export function StrategyScreen({ height, width, activeAgent, onClose, onSaved }:
             <Text dimColor>{'No active agent — run "use <agent>" to assign a strategy.'}</Text>
           )}
         </Box>
-        {renaming ? (
+        {textMode ? (
           <Box marginBottom={1}>
-            <Text color="cyanBright">New name: </Text>
-            <Text>{renameValue}</Text>
+            <Text color="cyanBright">
+              {textMode === "create" ? "New strategy name: " : "New name: "}
+            </Text>
+            <Text>{textValue}</Text>
             <Text color="cyanBright">▏</Text>
           </Box>
         ) : null}
         {loading ? (
           <Text dimColor>Loading strategies...</Text>
         ) : entries.length === 0 ? (
-          <Text dimColor>No strategies available. Connect to a node to load builtins.</Text>
+          <Text dimColor>No strategies yet. Press n to create one, or connect to a node to load builtins.</Text>
         ) : (
           (() => {
             const start = Math.max(0, Math.min(idx - Math.floor(bodyHeight / 2), entries.length - bodyHeight));

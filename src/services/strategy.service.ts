@@ -173,6 +173,40 @@ function slugifyStrategyId(name: string): string {
 }
 
 /**
+ * Create a new user strategy from scratch with a starter template, and return
+ * its id. The name is turned into a unique id.
+ */
+export async function createUserStrategy(name: string): Promise<string> {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error("Strategy name cannot be empty.");
+  }
+
+  let id = slugifyStrategyId(trimmed);
+  const base = id;
+  let n = 2;
+  while (await strategyExists(id)) {
+    id = `${base}-${n}`;
+    n += 1;
+  }
+
+  const template = [
+    `# ${trimmed}`,
+    "",
+    "Describe how this agent should decide.",
+    "",
+    "- Vote LONG when:",
+    "- Vote SHORT when:",
+    "- Vote NOTR when:",
+    "- Size by conviction:",
+    "- Risk rules:",
+  ].join("\n");
+
+  await saveUserStrategy(id, trimmed, template);
+  return id;
+}
+
+/**
  * Rename a user strategy. Updates its display name, derives a fresh id from the
  * new name, moves the body file, and repoints any agents that used it. Builtin
  * strategies come from the node and cannot be renamed.
