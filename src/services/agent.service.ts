@@ -62,7 +62,7 @@ export async function createAgent(name: string): Promise<AgentConfig> {
     name,
     createdAt: new Date().toISOString(),
     status: "idle",
-    strategyId: "always-notr",
+    strategyId: "technical-analysis",
     notrBehavior: "hold",
   };
 

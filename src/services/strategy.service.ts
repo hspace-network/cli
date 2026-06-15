@@ -12,7 +12,7 @@ import {
   getAgentDir,
 } from "../utils/fs.js";
 import { getCachedNodeConfig } from "./config.service.js";
-import { getAgent, updateAgentConfig } from "./agent.service.js";
+import { getAgent, listAgents, updateAgentConfig } from "./agent.service.js";
 
 export interface UserStrategyMeta {
   id: string;
@@ -160,6 +160,67 @@ export async function saveUserStrategy(
     index.strategies.push(meta);
   }
   await writeIndex(index);
+}
+
+function slugifyStrategyId(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+  return slug || "strategy";
+}
+
+/**
+ * Rename a user strategy. Updates its display name, derives a fresh id from the
+ * new name, moves the body file, and repoints any agents that used it. Builtin
+ * strategies come from the node and cannot be renamed.
+ */
+export async function renameUserStrategy(
+  oldId: string,
+  newLabel: string,
+): Promise<string> {
+  const trimmed = newLabel.trim();
+  if (!trimmed) {
+    throw new Error("Strategy name cannot be empty.");
+  }
+
+  const index = await readIndex();
+  const meta = index.strategies.find((s) => s.id === oldId);
+  if (!meta) {
+    throw new Error(
+      `"${oldId}" is a builtin strategy and cannot be renamed. Edit it to save your own copy first.`,
+    );
+  }
+
+  let newId = slugifyStrategyId(trimmed);
+  if (newId !== oldId) {
+    const base = newId;
+    let n = 2;
+    while (await strategyExists(newId)) {
+      newId = `${base}-${n}`;
+      n += 1;
+    }
+
+    const oldPath = getUserStrategyPath(oldId);
+    const newPath = getUserStrategyPath(newId);
+    if (await fileExists(oldPath)) {
+      await rename(oldPath, newPath);
+    }
+
+    const agents = await listAgents();
+    for (const agent of agents) {
+      if (agent.strategyId === oldId) {
+        await updateAgentConfig(agent.name, { strategyId: newId });
+      }
+    }
+  }
+
+  meta.id = newId;
+  meta.label = trimmed;
+  await writeIndex(index);
+  return newId;
 }
 
 export async function setAgentStrategy(

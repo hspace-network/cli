@@ -8,6 +8,7 @@ import {
   forkBuiltinStrategy,
   cleanupStrategyDraft,
   setAgentStrategy,
+  renameUserStrategy,
   type StrategyEntry,
 } from "../services/strategy.service.js";
 import { getAgent } from "../services/agent.service.js";
@@ -35,6 +36,8 @@ export function StrategyScreen({ height, width, activeAgent, onClose, onSaved }:
   const [noticeTone, setNoticeTone] = useState<"success" | "error">("success");
   const [assignedId, setAssignedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [renaming, setRenaming] = useState(false);
+  const [renameValue, setRenameValue] = useState("");
 
   const refresh = async () => {
     const list = await listAllStrategies();
@@ -69,6 +72,46 @@ export function StrategyScreen({ height, width, activeAgent, onClose, onSaved }:
   useInput((input, key) => {
     if (editing) return;
 
+    if (renaming) {
+      if (key.escape) {
+        setRenaming(false);
+        return;
+      }
+      if (key.return) {
+        const entry = entries[idx];
+        if (!entry) {
+          setRenaming(false);
+          return;
+        }
+        const value = renameValue;
+        void (async () => {
+          try {
+            const newId = await renameUserStrategy(entry.id, value);
+            setRenaming(false);
+            await refresh();
+            if (assignedId === entry.id) setAssignedId(newId);
+            setNoticeTone("success");
+            setNotice(`Renamed to "${value.trim()}" (${newId}).`);
+          } catch (err) {
+            setRenaming(false);
+            setNoticeTone("error");
+            setNotice((err as Error).message);
+          }
+        })();
+        return;
+      }
+      if (key.backspace || key.delete) {
+        setRenameValue((d) => d.slice(0, -1));
+        return;
+      }
+      if (!key.ctrl && !key.meta && input) {
+        const sanitized = input.replace(/[\r\n]/g, "");
+        if (sanitized) setRenameValue((d) => d + sanitized);
+        return;
+      }
+      return;
+    }
+
     if (key.escape) {
       onClose();
       return;
@@ -100,6 +143,19 @@ export function StrategyScreen({ height, width, activeAgent, onClose, onSaved }:
           setNotice((err as Error).message);
         }
       })();
+      return;
+    }
+    if (input === "r" && entries.length > 0) {
+      const entry = entries[idx];
+      if (!entry) return;
+      if (entry.source !== "user") {
+        setNoticeTone("error");
+        setNotice("Only your own strategies can be renamed. Press Enter on a builtin to save your own copy first.");
+        return;
+      }
+      setRenameValue(entry.label);
+      setRenaming(true);
+      setNotice(null);
       return;
     }
     if (key.return && entries.length > 0) {
@@ -163,7 +219,7 @@ export function StrategyScreen({ height, width, activeAgent, onClose, onSaved }:
       <Box borderStyle="single" borderColor="cyan" paddingX={1} flexShrink={0} width={width}>
         <Text color="cyanBright" bold>STRATEGIES</Text>
         <Box flexGrow={1} />
-        <Text dimColor>↑↓ select  Space assign  Enter edit  Esc close</Text>
+        <Text dimColor>↑↓ select  Space assign  Enter edit  r rename  Esc close</Text>
       </Box>
 
       <Box flexDirection="column" flexGrow={1} paddingX={2} paddingY={1}>
@@ -178,6 +234,13 @@ export function StrategyScreen({ height, width, activeAgent, onClose, onSaved }:
             <Text dimColor>{'No active agent — run "use <agent>" to assign a strategy.'}</Text>
           )}
         </Box>
+        {renaming ? (
+          <Box marginBottom={1}>
+            <Text color="cyanBright">New name: </Text>
+            <Text>{renameValue}</Text>
+            <Text color="cyanBright">▏</Text>
+          </Box>
+        ) : null}
         {loading ? (
           <Text dimColor>Loading strategies...</Text>
         ) : entries.length === 0 ? (
