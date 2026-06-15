@@ -21,7 +21,7 @@ export async function nodeCommand(args: string[]): Promise<string[]> {
       return [
         log.blank(),
         log.error("Usage: node set <url>"),
-        log.dim("  Example: node set http://localhost:3000"),
+        log.dim("  Example: node set http://localhost:6161"),
         log.blank(),
       ];
     }

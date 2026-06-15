@@ -58,12 +58,30 @@ export interface SessionActionEvent {
   position?: PositionSnapshot | null;
 }
 
+export type CodeAction = "write" | "run" | "install" | "signal" | "skip";
+
+/**
+ * Sandbox activity surfaced into the discussion log: the agent authoring code,
+ * running it (with output), installing a package, or emitting a signal. Tagged
+ * by room (background research is not tied to a single sessionId).
+ */
+export interface SessionCodeEvent {
+  type: "code";
+  roomId: string;
+  agentName: string;
+  action: CodeAction;
+  detail: string;
+  ok?: boolean;
+  output?: string;
+}
+
 export type DiscussionEvent =
   | SessionOpenEvent
   | SessionTurnEvent
   | SessionVoteEvent
   | SessionCloseEvent
-  | SessionActionEvent;
+  | SessionActionEvent
+  | SessionCodeEvent;
 
 type Listener = (event: DiscussionEvent) => void;
 

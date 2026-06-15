@@ -9,6 +9,7 @@ import {
 import { runAgent, stopAgent } from "../services/socket.service.js";
 import { fetchRunsForAgent } from "../services/runs.service.js";
 import { addAgentRoom, removeAgentRoom } from "../services/runs.cache.js";
+import { checkStopWarning } from "../commands/_stop-guard.js";
 
 interface RunSelectorProps {
   height: number;
@@ -22,6 +23,8 @@ interface RunSelectorProps {
 export interface SelectorResult {
   kind: "ok" | "error" | "cancelled";
   message: string;
+  /** Open-position warning to surface in the home output after a stop. */
+  warning?: string;
 }
 
 type RunStep = "market" | "interval";
@@ -306,6 +309,9 @@ function StopFlow({
   async function doStop(): Promise<void> {
     const roomId = rooms[idx];
     if (!roomId) return;
+    // Leaving never closes a position; capture the warning and surface it in the
+    // home output instead of blocking on a confirmation screen.
+    const warning = await checkStopWarning(agentName, roomId).catch(() => null);
     setBusy(`Leaving ${roomId}...`);
     setError(null);
     try {
@@ -315,6 +321,7 @@ function StopFlow({
       onClose({
         kind: "ok",
         message: `${agentName} left ${roomId}.`,
+        warning: warning ?? undefined,
       });
     } catch (err) {
       setBusy(null);

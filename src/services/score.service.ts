@@ -36,3 +36,24 @@ export async function agentExistsOnNode(args: {
   const score = await fetchAgentScore(args);
   return score !== null;
 }
+
+export interface AgentScoreEntry {
+  agent: string;
+  score: number | null;
+}
+
+export async function fetchAllAgentScores(args: {
+  nodeUrl: string;
+  agentNames: string[];
+}): Promise<AgentScoreEntry[]> {
+  const results = await Promise.all(
+    args.agentNames.map(async (agent) => {
+      const res = await fetchAgentScore({
+        nodeUrl: args.nodeUrl,
+        agentName: agent,
+      });
+      return { agent, score: res?.score ?? null };
+    }),
+  );
+  return results;
+}

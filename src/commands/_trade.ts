@@ -3,6 +3,8 @@ import { getAgent } from "../services/agent.service.js";
 import {
   loadCliConfig,
   getEffectiveNetwork,
+  getEffectiveChain,
+  validateChainNetworkPair,
   getPlatformCreds,
 } from "../services/config.service.js";
 import {
@@ -53,6 +55,10 @@ export async function executeOpen(
     return [log.error('Set your Bybit API key in settings ("settings" → Platform).')];
   }
   const network = getEffectiveNetwork(cfg);
+  const chainErr = validateChainNetworkPair(getEffectiveChain(cfg), network);
+  if (chainErr) {
+    return [log.error(chainErr)];
+  }
 
   let parsed;
   try {

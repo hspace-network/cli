@@ -2,6 +2,7 @@ import {
   bybitGet,
   bybitPost,
   fetchLastPrice,
+  formatPrice,
   formatQty,
   getInstrument,
   mintOrderLinkId,
@@ -229,4 +230,55 @@ export async function openMarketNotional(
     price,
     orderId: result.orderId,
   };
+}
+
+export async function getSymbolLeverage(
+  symbol: string,
+  network: BybitNetwork,
+  creds: BybitCreds,
+): Promise<number | null> {
+  const positions = await bybitGet<PositionListResult>(
+    network,
+    "/v5/position/list",
+    { category: "linear", symbol },
+    creds,
+  );
+  const entry = positions.list?.find((p) => p.symbol === symbol);
+  if (!entry) return null;
+  const lev = Number((entry as { leverage?: string }).leverage ?? "0");
+  return Number.isFinite(lev) && lev > 0 ? lev : null;
+}
+
+export async function setPositionStops(args: {
+  symbol: string;
+  side: PositionSide;
+  entryPrice: number;
+  slPct?: number;
+  tpPct?: number;
+  network: BybitNetwork;
+  creds: BybitCreds;
+}): Promise<void> {
+  if (args.slPct === undefined && args.tpPct === undefined) return;
+
+  const instrument = await getInstrument(args.symbol, args.network);
+  const body: Record<string, unknown> = {
+    category: "linear",
+    symbol: instrument.symbol,
+    tpslMode: "Full",
+    tpTriggerBy: "MarkPrice",
+    slTriggerBy: "MarkPrice",
+    positionIdx: 0,
+  };
+
+  const entry = args.entryPrice;
+  if (args.tpPct !== undefined) {
+    const mult = args.side === "long" ? 1 + args.tpPct / 100 : 1 - args.tpPct / 100;
+    body.takeProfit = formatPrice(entry * mult, instrument);
+  }
+  if (args.slPct !== undefined) {
+    const mult = args.side === "long" ? 1 - args.slPct / 100 : 1 + args.slPct / 100;
+    body.stopLoss = formatPrice(entry * mult, instrument);
+  }
+
+  await bybitPost(args.network, "/v5/position/trading-stop", body, args.creds);
 }

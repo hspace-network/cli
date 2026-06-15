@@ -6,10 +6,13 @@ import {
   getCachedNodeConfig,
   getEffectiveSelection,
   getEffectiveNetwork,
+  getEffectiveChain,
+  validateChainNetworkPair,
   getProviderApiKey,
   getPlatformCreds,
   type CliConfig,
   type BybitNetwork,
+  type ChainId,
   type Provider,
   type Platform,
 } from "../services/config.service.js";
@@ -27,9 +30,10 @@ type View =
   | "model"
   | "platform"
   | "platformcreds"
-  | "network";
+  | "network"
+  | "chain";
 
-type FieldId = "provider" | "model" | "platform" | "network";
+type FieldId = "provider" | "model" | "platform" | "network" | "chain";
 
 interface Field {
   id: FieldId;
@@ -41,11 +45,17 @@ const FIELDS: Field[] = [
   { id: "model", label: "Model" },
   { id: "platform", label: "Platform" },
   { id: "network", label: "Network" },
+  { id: "chain", label: "Chain" },
 ];
 
 const NETWORKS: { id: BybitNetwork; label: string }[] = [
   { id: "mainnet", label: "mainnet" },
   { id: "testnet", label: "testnet" },
+];
+
+const CHAINS: { id: ChainId; label: string }[] = [
+  { id: "mantle", label: "mantle" },
+  { id: "mantle-sepolia", label: "mantle-sepolia" },
 ];
 
 function maskApiKey(key: string | undefined): string {
@@ -206,6 +216,13 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
           setView("network");
           return;
         }
+
+        if (field.id === "chain") {
+          const idx = CHAINS.findIndex((c) => c.id === getEffectiveChain(config));
+          setSubIdx(idx === -1 ? 0 : idx);
+          setView("chain");
+          return;
+        }
       }
       return;
     }
@@ -360,7 +377,39 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
       if (key.return) {
         const chosen = NETWORKS[subIdx];
         if (!chosen) return;
+        const pairErr = validateChainNetworkPair(getEffectiveChain(config), chosen.id);
+        if (pairErr) {
+          setNotice(pairErr);
+          return;
+        }
         persist({ network: chosen.id }).then(() => setView("list"));
+        return;
+      }
+      return;
+    }
+
+    if (view === "chain") {
+      if (key.escape) {
+        setView("list");
+        return;
+      }
+      if (key.upArrow) {
+        setSubIdx((i) => Math.max(0, i - 1));
+        return;
+      }
+      if (key.downArrow) {
+        setSubIdx((i) => Math.min(CHAINS.length - 1, i + 1));
+        return;
+      }
+      if (key.return) {
+        const chosen = CHAINS[subIdx];
+        if (!chosen) return;
+        const pairErr = validateChainNetworkPair(chosen.id, getEffectiveNetwork(config));
+        if (pairErr) {
+          setNotice(pairErr);
+          return;
+        }
+        persist({ chain: chosen.id }).then(() => setView("list"));
         return;
       }
       return;
@@ -433,6 +482,14 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
       return {
         text: value,
         isDefault: !config.network,
+        isSet: true,
+      };
+    }
+    if (id === "chain") {
+      const value = getEffectiveChain(config);
+      return {
+        text: value,
+        isDefault: !config.chain,
         isSet: true,
       };
     }
@@ -683,6 +740,39 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
           </Box>
         </Box>
         {renderFooter("Default: mainnet")}
+      </Box>
+    );
+  }
+
+  if (view === "chain") {
+    const currentChain = getEffectiveChain(config);
+    return (
+      <Box flexDirection="column" height={height} width={width}>
+        {renderHeader()}
+        <Box flexDirection="column" flexGrow={1} paddingX={2} paddingY={1}>
+          <Text color="cyan" bold>Select Chain</Text>
+          <Text dimColor>MNT deposits and withdrawals use this chain.</Text>
+          <Box marginTop={1} flexDirection="column">
+            {CHAINS.map((c, i) => {
+              const selected = i === subIdx;
+              const current = c.id === currentChain;
+              const fromDefault = current && !config.chain;
+              return (
+                <Box key={c.id}>
+                  <Box width={4}>
+                    <Text color="cyan" bold>{selected ? ">" : " "}</Text>
+                  </Box>
+                  <Text color={selected ? "cyanBright" : "white"} bold={selected}>
+                    {c.label}
+                  </Text>
+                  {current ? <Text dimColor>{"  (current)"}</Text> : null}
+                  {fromDefault ? <Text color="magenta">{"  (default)"}</Text> : null}
+                </Box>
+              );
+            })}
+          </Box>
+        </Box>
+        {renderFooter("Default: mantle — pair mantle-sepolia with testnet")}
       </Box>
     );
   }

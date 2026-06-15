@@ -1,15 +1,16 @@
 {
-  "name": "agents-cli",
+  "name": "hspace",
   "version": "0.1.0",
   "description": "Autonomous Trading Agent Manager — Interactive CLI",
   "type": "module",
   "bin": {
-    "agent": "./dist/index.js"
+    "hspace": "./dist/index.js"
   },
   "scripts": {
     "dev": "tsx src/index.tsx",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "vitest run"
   },
   "keywords": [
     "agents",
@@ -21,6 +22,7 @@
     "@anthropic-ai/sdk": "^0.93.0",
     "@inkjs/ui": "^2.0.0",
     "chalk": "^5.6.2",
+    "esbuild": "^0.25.0",
     "fullscreen-ink": "^0.1.0",
     "ink": "^7.0.0",
     "openai": "^6.36.0",
@@ -32,6 +34,7 @@
     "@types/node": "^25.6.0",
     "@types/react": "^19.2.14",
     "tsx": "^4.21.0",
-    "typescript": "^6.0.2"
+    "typescript": "^6.0.2",
+    "vitest": "^3.2.0"
   }
 }

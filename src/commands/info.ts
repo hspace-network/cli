@@ -58,6 +58,20 @@ export async function infoCommand(args: string[]): Promise<string[]> {
   const capLabel =
     cap > 0 ? chalk.green(`$${cap} per trade`) : chalk.dim("disabled");
   lines.push(log.raw(`  ${chalk.dim("Spending cap")}  ${capLabel}`));
+  lines.push(
+    log.raw(
+      `  ${chalk.dim("NOTR behavior")}  ${chalk.white(config.notrBehavior ?? "hold")}`,
+    ),
+  );
+  const maxPos = config.maxPositionUsd ?? cap;
+  lines.push(
+    log.raw(
+      `  ${chalk.dim("Max position")}   ${maxPos > 0 ? chalk.green(`$${maxPos}`) : chalk.dim("(cap)")}`,
+    ),
+  );
+  lines.push(
+    log.raw(`  ${chalk.dim("Max leverage")}   ${chalk.white(String(config.maxLeverage ?? 10))}`),
+  );
 
   if (config.strategyId) {
     const label = await getStrategyLabel(config.strategyId);
@@ -75,9 +89,8 @@ export async function infoCommand(args: string[]): Promise<string[]> {
       const cfg = await loadCliConfig();
       const scoreRes = await fetchAgentScore({ nodeUrl: cfg.nodeUrl, agentName: name });
       if (scoreRes) {
-        const pct = (scoreRes.score * 100).toFixed(1);
         lines.push(
-          log.raw(`  ${chalk.dim("Score")}          ${chalk.green(scoreRes.score.toFixed(3))} ${chalk.dim(`(${pct}%)`)}`),
+          log.raw(`  ${chalk.dim("Score")}          ${chalk.green(scoreRes.score.toFixed(1))} ${chalk.dim("/ 100")}`),
         );
       } else {
         lines.push(log.raw(`  ${chalk.dim("Score")}          ${chalk.dim("not on node")}`));

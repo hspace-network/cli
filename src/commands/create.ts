@@ -9,6 +9,7 @@ import {
 import { loadCliConfig } from "../services/config.service.js";
 import { registerAgent } from "../services/registration.service.js";
 import { agentExistsOnNode } from "../services/score.service.js";
+import { syncAgentLimits } from "../services/nodeAgent.service.js";
 import { dirExists, getAgentDir } from "../utils/fs.js";
 import { setBusy } from "../utils/busy.js";
 import { log } from "../utils/logger.js";
@@ -48,6 +49,8 @@ function capPrompt(name: string): PendingPrompt {
       }
       try {
         await updateAgentConfig(name, { spendingCapUsd: cap });
+        const cfg = await loadCliConfig();
+        await syncAgentLimits({ nodeUrl: cfg.nodeUrl, name, spendingCapUsd: cap });
       } catch (err) {
         return { lines: [log.error((err as Error).message)] };
       }
@@ -76,8 +79,9 @@ async function handleWalletSave(
   const cfg = await loadCliConfig();
 
   setBusy("Registering agent with node...");
+  let sponsorship;
   try {
-    await registerAgent({
+    sponsorship = await registerAgent({
       nodeUrl: cfg.nodeUrl,
       name,
       address: result.address,
@@ -107,8 +111,19 @@ async function handleWalletSave(
     };
   }
 
+  const lines = walletSuccessLines(name, result.address, showKey ? result.privateKey : undefined);
+  if (sponsorship?.txHash) {
+    lines.push(
+      log.blank(),
+      log.success(
+        `Sponsored ${sponsorship.amountMnt} MNT for gas (gasless onboarding) — fund and trade without buying MNT first.`,
+      ),
+      log.raw(`  ${chalk.dim("tx")}  ${chalk.white(sponsorship.txHash)}`),
+    );
+  }
+
   return {
-    lines: walletSuccessLines(name, result.address, showKey ? result.privateKey : undefined),
+    lines,
     nextPrompt: capPrompt(name),
   };
 }

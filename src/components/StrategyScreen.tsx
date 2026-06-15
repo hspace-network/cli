@@ -7,12 +7,15 @@ import {
   prepareStrategyEdit,
   forkBuiltinStrategy,
   cleanupStrategyDraft,
+  setAgentStrategy,
   type StrategyEntry,
 } from "../services/strategy.service.js";
+import { getAgent } from "../services/agent.service.js";
 
 interface StrategyScreenProps {
   height: number;
   width: number;
+  activeAgent: string | null;
   onClose: () => void;
   onSaved?: (message: string) => void;
 }
@@ -24,11 +27,13 @@ interface EditingState {
   builtinId?: string;
 }
 
-export function StrategyScreen({ height, width, onClose, onSaved }: StrategyScreenProps) {
+export function StrategyScreen({ height, width, activeAgent, onClose, onSaved }: StrategyScreenProps) {
   const [entries, setEntries] = useState<StrategyEntry[]>([]);
   const [idx, setIdx] = useState(0);
   const [editing, setEditing] = useState<EditingState | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [noticeTone, setNoticeTone] = useState<"success" | "error">("success");
+  const [assignedId, setAssignedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const refresh = async () => {
@@ -42,7 +47,26 @@ export function StrategyScreen({ height, width, onClose, onSaved }: StrategyScre
     void refresh();
   }, []);
 
-  useInput((_input, key) => {
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      if (!activeAgent) {
+        setAssignedId(null);
+        return;
+      }
+      try {
+        const agent = await getAgent(activeAgent);
+        if (!cancelled) setAssignedId(agent.strategyId ?? null);
+      } catch {
+        if (!cancelled) setAssignedId(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeAgent]);
+
+  useInput((input, key) => {
     if (editing) return;
 
     if (key.escape) {
@@ -55,6 +79,27 @@ export function StrategyScreen({ height, width, onClose, onSaved }: StrategyScre
     }
     if (key.downArrow) {
       setIdx((i) => Math.min(entries.length - 1, i + 1));
+      return;
+    }
+    if (input === " " && entries.length > 0) {
+      const entry = entries[idx];
+      if (!entry) return;
+      if (!activeAgent) {
+        setNoticeTone("error");
+        setNotice('No active agent — run "use <agent>" first to assign a strategy.');
+        return;
+      }
+      void (async () => {
+        try {
+          await setAgentStrategy(activeAgent, entry.id);
+          setAssignedId(entry.id);
+          setNoticeTone("success");
+          setNotice(`${activeAgent} now uses "${entry.label}" (${entry.id}).`);
+        } catch (err) {
+          setNoticeTone("error");
+          setNotice((err as Error).message);
+        }
+      })();
       return;
     }
     if (key.return && entries.length > 0) {
@@ -88,12 +133,14 @@ export function StrategyScreen({ height, width, onClose, onSaved }: StrategyScre
               setEditing(null);
               await refresh();
               const msg = `Saved as user strategy "${newId}".`;
+              setNoticeTone("success");
               setNotice(msg);
               onSaved?.(msg);
             } else {
               setEditing(null);
               await refresh();
               const msg = "Strategy saved.";
+              setNoticeTone("success");
               setNotice(msg);
               onSaved?.(msg);
             }
@@ -116,10 +163,21 @@ export function StrategyScreen({ height, width, onClose, onSaved }: StrategyScre
       <Box borderStyle="single" borderColor="cyan" paddingX={1} flexShrink={0} width={width}>
         <Text color="cyanBright" bold>STRATEGIES</Text>
         <Box flexGrow={1} />
-        <Text dimColor>↑↓ select  Enter edit  Esc close</Text>
+        <Text dimColor>↑↓ select  Space assign  Enter edit  Esc close</Text>
       </Box>
 
       <Box flexDirection="column" flexGrow={1} paddingX={2} paddingY={1}>
+        <Box marginBottom={1}>
+          {activeAgent ? (
+            <Text>
+              <Text dimColor>Assigning to </Text>
+              <Text color="cyanBright" bold>{activeAgent}</Text>
+              <Text dimColor> — press Space to set the highlighted strategy</Text>
+            </Text>
+          ) : (
+            <Text dimColor>{'No active agent — run "use <agent>" to assign a strategy.'}</Text>
+          )}
+        </Box>
         {loading ? (
           <Text dimColor>Loading strategies...</Text>
         ) : entries.length === 0 ? (
@@ -131,23 +189,26 @@ export function StrategyScreen({ height, width, onClose, onSaved }: StrategyScre
           })().map((entry, i) => {
             const absoluteIdx = Math.max(0, Math.min(idx - Math.floor(bodyHeight / 2), entries.length - bodyHeight)) + i;
             const selected = absoluteIdx === idx;
+            const assigned = entry.id === assignedId;
             const tag = entry.source === "builtin" ? "[builtin]" : "[user]   ";
+            const color = selected ? "cyanBright" : assigned ? "green" : undefined;
             return (
               <Text
                 key={`${entry.source}-${entry.id}`}
-                color={selected ? "cyanBright" : undefined}
-                bold={selected}
-                dimColor={!selected}
+                color={color}
+                bold={selected || assigned}
+                dimColor={!selected && !assigned}
               >
                 {selected ? "> " : "  "}
                 {tag} {entry.label} ({entry.id})
+                {assigned ? <Text color="green" bold>{"  ● in use"}</Text> : ""}
               </Text>
             );
           })
         )}
         {notice ? (
           <Box marginTop={1}>
-            <Text color="green">{notice}</Text>
+            <Text color={noticeTone === "error" ? "yellow" : "green"}>{notice}</Text>
           </Box>
         ) : null}
       </Box>

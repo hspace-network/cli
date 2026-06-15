@@ -1,5 +1,7 @@
 import chalk from "chalk";
 import { getAgent, updateAgentConfig } from "../services/agent.service.js";
+import { loadCliConfig } from "../services/config.service.js";
+import { syncAgentLimits } from "../services/nodeAgent.service.js";
 import { log } from "../utils/logger.js";
 
 export async function capCommand(args: string[]): Promise<string[]> {
@@ -35,6 +37,15 @@ export async function capCommand(args: string[]): Promise<string[]> {
     await updateAgentConfig(name, { spendingCapUsd: n });
   } catch (err) {
     return [log.error((err as Error).message)];
+  }
+
+  try {
+    const cfg = await loadCliConfig();
+    await syncAgentLimits({ nodeUrl: cfg.nodeUrl, name, spendingCapUsd: n });
+  } catch (err) {
+    return [
+      log.warn(`Local cap saved but node sync failed: ${(err as Error).message}`),
+    ];
   }
 
   if (n === 0) {

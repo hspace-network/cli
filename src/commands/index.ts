@@ -23,6 +23,12 @@ import { levCommand } from "./lev.js";
 import { capCommand } from "./cap.js";
 import { historyCommand } from "./history.js";
 import { logsCommand } from "./logs.js";
+import { scoreCommand } from "./score.js";
+import { balanceCommand } from "./balance.js";
+import { depositCommand } from "./deposit.js";
+import { withdrawCommand } from "./withdraw.js";
+import { limitsCommand } from "./limits.js";
+import { codeCommand } from "./code.js";
 
 export interface PendingPrompt {
   prompt: string;
@@ -31,6 +37,8 @@ export interface PendingPrompt {
 
 export interface StreamHandle {
   appendToken: (chunk: string) => void;
+  /** Show an animated spinner with a label in the busy row (null clears it). */
+  setStatus: (label: string | null) => void;
   finalize: (extraLines?: string[]) => void;
   fail: (errorLine: string) => void;
 }
@@ -50,6 +58,10 @@ export interface PosScreenOpen {
   agentName: string;
 }
 
+export interface ScriptsScreenOpen {
+  agentName: string;
+}
+
 export interface InteractiveResult {
   lines: string[];
   prompt?: PendingPrompt;
@@ -59,6 +71,7 @@ export interface InteractiveResult {
   openPosScreen?: PosScreenOpen;
   openLogs?: true;
   openStrategyScreen?: true;
+  openScriptsScreen?: ScriptsScreenOpen;
   stream?: StreamSession;
 }
 
@@ -96,6 +109,12 @@ const commands: Record<string, CommandHandler> = {
   "/pos": posCommand,
   "/cancel": cancelCommand,
   "/lev": levCommand,
+  score: scoreCommand,
+  balance: balanceCommand,
+  deposit: depositCommand,
+  withdraw: withdrawCommand,
+  limits: limitsCommand,
+  code: codeCommand,
 };
 
 export function getCommand(name: string): CommandHandler | undefined {

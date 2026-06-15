@@ -1,5 +1,4 @@
 import type { Socket } from "socket.io-client";
-import { getAgent } from "./agent.service.js";
 import { resolveStrategyForAgent } from "./strategy.service.js";
 import {
   loadCliConfig,
@@ -8,15 +7,25 @@ import {
   getProviderApiKey,
   getPlatformCreds,
   getEffectiveNetwork,
+  getEffectiveChain,
+  validateChainNetworkPair,
   type BybitNetwork,
 } from "./config.service.js";
+import { getAgent, type AgentConfig } from "./agent.service.js";
+import { clampVote } from "./vote-clamp.js";
+import { getTradeCountToday, incrementTradeCount } from "./trade-stats.service.js";
 import {
   askVote,
   askDiscussionTurn,
+  buildSandboxSystemPrompt,
   type DiscussionContext,
   type DiscussionTurn,
   type VoteResult,
+  type VoteToolOptions,
 } from "./llm.service.js";
+import { buildSandboxTools } from "./tools.service.js";
+import { makeCodeReporters } from "./sandbox.reporters.js";
+import { writeSignals } from "./signals.service.js";
 import { resolveSymbol, type BybitCreds } from "./bybit.service.js";
 import {
   getOpenPosition,
@@ -25,10 +34,16 @@ import {
   reducePosition,
   positionNotionalUsd,
   fetchPositionSnapshot,
+  getSymbolLeverage,
+  setPositionStops,
   type PositionSnapshot,
+  type PositionSide,
 } from "./positions.service.js";
 import { fetchLastPrice, getInstrument } from "./bybit.service.js";
 import { emitDiscussionEvent } from "./discussion.bus.js";
+import { readActionableSignalsBlock } from "./signals.service.js";
+import { readAgentMemory } from "./memory.service.js";
+import { resolveResearchContext, runReflection } from "./research.service.js";
 import {
   ensureDir,
   appendText,
@@ -84,9 +99,29 @@ function asTranscript(value: unknown): DiscussionTurn[] {
 }
 
 interface AgentRunContext {
+  agentName: string;
+  agentCfg: AgentConfig;
   ctx: DiscussionContext;
   network: BybitNetwork;
   creds: BybitCreds | null;
+}
+
+/**
+ * Ask for a vote, retrying once on a transient LLM failure before giving up.
+ * Without this, a single rate-limit/timeout would be swallowed as a NOTR vote,
+ * which silently flips a decided agent to "no trade".
+ */
+async function askVoteResilient(
+  ctx: DiscussionContext,
+  phase: "initial" | "final",
+  opts?: VoteToolOptions,
+): Promise<VoteResult> {
+  try {
+    return await askVote(ctx, phase, opts);
+  } catch {
+    await new Promise((r) => setTimeout(r, 600));
+    return askVote(ctx, phase, opts);
+  }
 }
 
 async function buildContext(
@@ -105,18 +140,56 @@ async function buildContext(
   const apiKey = getProviderApiKey(cfg, effective.provider);
   if (!apiKey) return null;
 
+  const network = getEffectiveNetwork(cfg);
+  const chain = getEffectiveChain(cfg);
+  if (validateChainNetworkPair(chain, network)) return null;
+
   const strategy = (await resolveStrategyForAgent(agentName)) ?? undefined;
   const { market, interval } = splitRoom(roomId);
 
-  let capUsd = 0;
+  let agentCfg: AgentConfig;
   try {
-    const agentCfg = await getAgent(agentName);
-    capUsd = agentCfg.spendingCapUsd ?? 0;
+    agentCfg = await getAgent(agentName);
   } catch {
-    capUsd = 0;
+    return null;
+  }
+  const capUsd = agentCfg.spendingCapUsd ?? 0;
+
+  let signals: string | undefined;
+  try {
+    signals = await readActionableSignalsBlock(agentName, roomId);
+  } catch {
+    signals = undefined;
+  }
+
+  // The agent's own recent decisions in THIS market, so votes are informed by
+  // its track record instead of forgetting what it did last time.
+  let memory: string | undefined;
+  try {
+    memory = await readAgentMemory(agentName, roomId, { limit: 5 });
+  } catch {
+    memory = undefined;
+  }
+
+  const creds = getPlatformCreds(cfg, "Bybit") ?? null;
+
+  // Current live position on this symbol, so the agent reasons about what it
+  // already holds (add/reduce/flip/hold) rather than deciding in a vacuum.
+  let position: string | undefined;
+  if (creds) {
+    try {
+      const pos = await getOpenPosition(resolveSymbol(market), network, creds);
+      position = pos
+        ? `${pos.side.toUpperCase()} ${pos.size} @ ${pos.avgPrice}`
+        : "flat (no open position)";
+    } catch {
+      position = undefined;
+    }
   }
 
   return {
+    agentName,
+    agentCfg,
     ctx: {
       provider: effective.provider,
       model: effective.model,
@@ -127,9 +200,12 @@ async function buildContext(
       interval,
       transcript: asTranscript(transcript),
       capUsd,
+      signals,
+      memory,
+      position,
     },
-    network: getEffectiveNetwork(cfg),
-    creds: getPlatformCreds(cfg, "Bybit") ?? null,
+    network,
+    creds,
   };
 }
 
@@ -183,6 +259,70 @@ async function snapshotAfter(
   return fetchPositionSnapshot(symbol, network, creds);
 }
 
+async function applyAutoStops(
+  symbol: string,
+  side: PositionSide,
+  entryPrice: number,
+  agentCfg: AgentConfig,
+  network: BybitNetwork,
+  creds: BybitCreds,
+): Promise<void> {
+  try {
+    await setPositionStops({
+      symbol,
+      side,
+      entryPrice,
+      slPct: agentCfg.defaultSlPct,
+      tpPct: agentCfg.defaultTpPct,
+      network,
+      creds,
+    });
+  } catch {
+    // stops are best-effort
+  }
+}
+
+async function guardTradeLimits(
+  run: AgentRunContext,
+  targetUsd: number,
+  symbol: string,
+): Promise<ReconcileResult | null> {
+  const { agentCfg, network, creds } = run;
+  if (!creds) return null;
+
+  const maxTrades = agentCfg.maxTradesPerDay ?? 50;
+  const todayCount = await getTradeCountToday(run.agentName);
+  if (todayCount >= maxTrades) {
+    return {
+      type: "skipped",
+      ok: false,
+      message: `daily trade limit reached (${maxTrades}/day)`,
+    };
+  }
+
+  const cap = agentCfg.spendingCapUsd ?? 0;
+  const maxPos = agentCfg.maxPositionUsd ?? cap;
+  if (maxPos > 0 && targetUsd > maxPos) {
+    return {
+      type: "skipped",
+      ok: false,
+      message: `target $${targetUsd} exceeds max position $${maxPos}`,
+    };
+  }
+
+  const maxLev = agentCfg.maxLeverage ?? 10;
+  const lev = await getSymbolLeverage(symbol, network, creds);
+  if (lev !== null && lev > maxLev) {
+    return {
+      type: "skipped",
+      ok: false,
+      message: `leverage ${lev}x exceeds max ${maxLev}x`,
+    };
+  }
+
+  return null;
+}
+
 /**
  * Reconcile open position to the final vote using target-size semantics:
  * sizeUsd is the desired total notional in USD for LONG/SHORT votes.
@@ -191,7 +331,7 @@ async function reconcilePosition(
   run: AgentRunContext,
   vote: VoteResult,
 ): Promise<ReconcileResult> {
-  const { ctx, network, creds } = run;
+  const { ctx, network, creds, agentCfg } = run;
   if (!creds) {
     return {
       type: "skipped",
@@ -201,6 +341,7 @@ async function reconcilePosition(
   }
 
   const symbol = resolveSymbol(ctx.market);
+  const notrBehavior = agentCfg.notrBehavior ?? "hold";
 
   try {
     const position = await getOpenPosition(symbol, network, creds);
@@ -209,7 +350,16 @@ async function reconcilePosition(
       if (!position) {
         return { type: "none", ok: true, message: "NOTR — stayed flat", position: null };
       }
+      if (notrBehavior === "hold") {
+        return {
+          type: "none",
+          ok: true,
+          message: "NOTR — held position",
+          position: await snapshotAfter(symbol, network, creds),
+        };
+      }
       const closed = await closePosition(symbol, network, creds);
+      await incrementTradeCount(run.agentName);
       return {
         type: "close",
         ok: true,
@@ -221,6 +371,9 @@ async function reconcilePosition(
     const targetSide = vote.way === "LONG" ? "long" : "short";
     const targetUsd = vote.sizeUsd;
 
+    const guard = await guardTradeLimits(run, targetUsd, symbol);
+    if (guard) return guard;
+
     if (!position) {
       if (targetUsd <= 0) {
         return {
@@ -231,6 +384,8 @@ async function reconcilePosition(
         };
       }
       const opened = await openMarketNotional(symbol, targetSide, targetUsd, network, creds);
+      await applyAutoStops(symbol, targetSide, opened.price, agentCfg, network, creds);
+      await incrementTradeCount(run.agentName);
       return {
         type: "open",
         ok: true,
@@ -242,6 +397,7 @@ async function reconcilePosition(
     if (position.side !== targetSide) {
       await closePosition(symbol, network, creds);
       if (targetUsd <= 0) {
+        await incrementTradeCount(run.agentName);
         return {
           type: "close",
           ok: true,
@@ -250,6 +406,8 @@ async function reconcilePosition(
         };
       }
       const opened = await openMarketNotional(symbol, targetSide, targetUsd, network, creds);
+      await applyAutoStops(symbol, targetSide, opened.price, agentCfg, network, creds);
+      await incrementTradeCount(run.agentName);
       return {
         type: "flip",
         ok: true,
@@ -258,7 +416,6 @@ async function reconcilePosition(
       };
     }
 
-    // Same side — adjust toward target total size.
     const instrument = await getInstrument(symbol, network);
     const price = await fetchLastPrice(instrument.symbol, network);
     if (price === null || !Number.isFinite(price) || price <= 0) {
@@ -271,6 +428,7 @@ async function reconcilePosition(
 
     if (targetUsd <= 0) {
       const closed = await closePosition(symbol, network, creds);
+      await incrementTradeCount(run.agentName);
       return {
         type: "close",
         ok: true,
@@ -290,7 +448,11 @@ async function reconcilePosition(
     }
 
     if (diff > tolerance) {
+      const addGuard = await guardTradeLimits(run, targetUsd, symbol);
+      if (addGuard) return addGuard;
       const added = await openMarketNotional(symbol, targetSide, diff, network, creds);
+      await applyAutoStops(symbol, targetSide, added.price, agentCfg, network, creds);
+      await incrementTradeCount(run.agentName);
       return {
         type: "add",
         ok: true,
@@ -302,6 +464,7 @@ async function reconcilePosition(
     const reduceUsd = currentUsd - targetUsd;
     const reduceQty = reduceUsd / price;
     const reduced = await reducePosition(symbol, reduceQty, network, creds);
+    await incrementTradeCount(run.agentName);
     const snap = await snapshotAfter(symbol, network, creds);
     return {
       type: "reduce",
@@ -349,19 +512,70 @@ export function attachDiscussionHandlers(
           ack?.({ way: "NOTR", rationale: "", sizeUsd: 0 });
           return;
         }
-        const result = await askVote(run.ctx, phase);
-        ack?.({
-          way: result.way,
+
+        // Make the decision tool-capable: let the agent run its saved scripts or
+        // write a quick ccxt fetch to get any data its strategy needs, instead
+        // of voting NOTR because "data is not provided". Signals it emits are
+        // cached so the discussion turns and the final vote can reuse them.
+        const reporters = makeCodeReporters(agentName, roomId);
+        const sandboxSystem = await buildSandboxSystemPrompt(run.ctx.strategy);
+        const voteTools: VoteToolOptions = {
+          tools: buildSandboxTools({
+            agent: agentName,
+            market: run.ctx.market,
+            interval: run.ctx.interval,
+            network: run.network,
+            onSignal: (s) => {
+              void writeSignals(agentName, roomId, s).catch(() => {});
+            },
+            llm: {
+              provider: run.ctx.provider,
+              model: run.ctx.model,
+              apiKey: run.ctx.apiKey,
+              system: sandboxSystem,
+            },
+            reporters,
+          }),
+          onToolCall: reporters.onToolCall,
+          onToolResult: reporters.onToolResult,
+        };
+
+        const result = await askVoteResilient(run.ctx, phase, voteTools);
+        const clamped = clampVote(result.way, result.sizeUsd, run.ctx.capUsd);
+        const vote: VoteResult = {
+          way: clamped.way,
+          sizeUsd: clamped.sizeUsd,
           rationale: result.rationale,
-          sizeUsd: result.sizeUsd,
+        };
+        ack?.({
+          way: vote.way,
+          rationale: vote.rationale,
+          sizeUsd: vote.sizeUsd,
         });
+
+        const voteKey = `vote:${sessionId}:${agentName}:${phase}`;
+        if (once(voteKey)) {
+          emitDiscussionEvent({
+            type: "vote",
+            sessionId,
+            roomId,
+            agentName,
+            phase,
+            way: vote.way,
+            rationale: vote.rationale,
+          });
+        }
 
         const record = getRecord(agentName, sessionId, roomId);
         if (phase === "initial") {
-          record.initial = result;
+          record.initial = vote;
         } else {
-          record.final = result;
-          const action = await reconcilePosition(run, result);
+          record.final = vote;
+          if (record.action) return;
+          if (!once(`reconcile:${agentName}:${sessionId}`)) return;
+          record.action = { type: "pending", ok: true, message: "executing…" };
+          await writeHistory(record);
+          const action = await reconcilePosition(run, vote);
           record.action = action;
           emitDiscussionEvent({
             type: "action",
@@ -477,6 +691,8 @@ export function attachDiscussionHandlers(
       way: "LONG" | "SHORT" | "NOTR";
       rationale: string;
     }) => {
+      // Own votes are logged from discussion:vote-request (authoritative ack).
+      if (payload.agentName === agentName) return;
       if (
         !once(`vote:${payload.sessionId}:${payload.agentName}:${payload.phase}`)
       )
@@ -501,14 +717,31 @@ export function attachDiscussionHandlers(
       rounds: number;
       tally: { LONG: number; SHORT: number; NOTR: number };
     }) => {
-      if (!once(`close:${payload.sessionId}`)) return;
-      emitDiscussionEvent({
-        type: "close",
-        sessionId: payload.sessionId,
-        roomId: payload.roomId,
-        rounds: payload.rounds,
-        tally: payload.tally,
-      });
+      if (once(`close:${payload.sessionId}`)) {
+        emitDiscussionEvent({
+          type: "close",
+          sessionId: payload.sessionId,
+          roomId: payload.roomId,
+          rounds: payload.rounds,
+          tally: payload.tally,
+        });
+      }
+      // Post-session self-improvement: best-effort, once per agent per session.
+      if (once(`reflect:${payload.sessionId}:${agentName}`)) {
+        void (async () => {
+          try {
+            const rctx = await resolveResearchContext(agentName, payload.roomId);
+            if (rctx) {
+              await runReflection(rctx, {
+                tally: payload.tally,
+                rounds: payload.rounds,
+              });
+            }
+          } catch {
+            // reflection is best-effort; never disrupt the session flow
+          }
+        })();
+      }
     },
   );
 }

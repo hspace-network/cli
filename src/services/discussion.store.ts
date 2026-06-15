@@ -1,7 +1,7 @@
-import { subscribeDiscussion, type ActionKind, type DiscussionEvent } from "./discussion.bus.js";
+import { subscribeDiscussion, type ActionKind, type CodeAction, type DiscussionEvent } from "./discussion.bus.js";
 import { formatPositionTableLines } from "../utils/position-table.js";
 
-export type ChatRole = "system" | "vote" | "turn" | "action";
+export type ChatRole = "system" | "vote" | "turn" | "action" | "code";
 
 export interface ChatEntry {
   role: ChatRole;
@@ -12,6 +12,8 @@ export interface ChatEntry {
   phase?: "opening" | "final";
   ok?: boolean;
   kind?: ActionKind;
+  codeAction?: CodeAction;
+  output?: string;
   tableLines?: string[];
 }
 
@@ -36,6 +38,14 @@ const listeners = new Set<Listener>();
 
 function notify(): void {
   for (const fn of listeners) fn();
+}
+
+/** Most recent (open or closed) session for a room, for attaching code events. */
+function latestSessionForRoom(roomId: string): SessionLog | undefined {
+  for (let i = sessions.length - 1; i >= 0; i -= 1) {
+    if (sessions[i]!.roomId === roomId) return sessions[i];
+  }
+  return undefined;
 }
 
 function ensureSession(
@@ -110,6 +120,20 @@ function handle(event: DiscussionEvent): void {
       text: event.message,
       kind: event.kind,
       tableLines,
+    });
+  } else if (event.type === "code") {
+    // Background research has no sessionId; attach to the latest session for the
+    // room, or a synthetic per-room research session if none exists yet.
+    const session =
+      latestSessionForRoom(event.roomId) ??
+      ensureSession(`research:${event.roomId}`, event.roomId);
+    session.entries.push({
+      role: "code",
+      agentName: event.agentName,
+      ok: event.ok,
+      codeAction: event.action,
+      text: event.detail,
+      output: event.output,
     });
   } else if (event.type === "close") {
     const session = ensureSession(event.sessionId, event.roomId);

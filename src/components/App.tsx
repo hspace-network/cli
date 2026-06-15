@@ -12,6 +12,7 @@ import { RunSelector, type SelectorResult } from "./RunSelector.js";
 import { PosScreen } from "./PosScreen.js";
 import { LogsScreen } from "./LogsScreen.js";
 import { StrategyScreen } from "./StrategyScreen.js";
+import { ScriptsScreen } from "./ScriptsScreen.js";
 import { parseInput } from "../cli/parser.js";
 import {
   getCommand,
@@ -20,6 +21,7 @@ import {
   type PendingPrompt,
   type PosScreenOpen,
   type RunSelectorOpen,
+  type ScriptsScreenOpen,
 } from "../commands/index.js";
 import { listAgents } from "../services/agent.service.js";
 import {
@@ -70,6 +72,11 @@ const AGENT_FIRST_COMMANDS = new Set<string>([
   "/close",
   "/cancel",
   "/lev",
+  "balance",
+  "deposit",
+  "withdraw",
+  "limits",
+  "code",
 ]);
 
 export function App() {
@@ -95,6 +102,7 @@ export function App() {
   const [posScreen, setPosScreen] = useState<PosScreenOpen | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [strategyOpen, setStrategyOpen] = useState(false);
+  const [scriptsScreen, setScriptsScreen] = useState<ScriptsScreenOpen | null>(null);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [nodeUrl, setNodeUrl] = useState<string>("");
@@ -143,6 +151,12 @@ export function App() {
         "myrooms",
         "pos",
         "use",
+        "code",
+        "score",
+        "balance",
+        "deposit",
+        "withdraw",
+        "limits",
       ];
       const AGENT_CMDS_SLASH = [
         "/long",
@@ -162,6 +176,10 @@ export function App() {
         ...agentNames.flatMap((name) =>
           [...AGENT_CMDS_BARE, ...AGENT_CMDS_SLASH].map((cmd) => `${cmd} ${name}`),
         ),
+        ...agentNames.flatMap((name) => [
+          `code ${name} scripts`,
+          `code ${name} dry-run`,
+        ]),
         ...agentNames.flatMap((name) =>
           marketIds.flatMap((m) => [
             `run ${name} ${m}`,
@@ -175,6 +193,8 @@ export function App() {
       ];
 
       if (activeAgent) {
+        completions.push("code scripts");
+        completions.push("code dry-run");
         for (const m of marketIds) {
           completions.push(`/long ${m}`);
           completions.push(`/short ${m}`);
@@ -283,12 +303,16 @@ export function App() {
         const rows: string[] = [];
         for (const a of eligible) {
           const rooms = runsByAgent.get(a.name) ?? [];
-          const nameCol = chalk.white.bold(a.name.padEnd(14));
-          if (rooms.length === 0) {
-            rows.push(`    ${nameCol}${chalk.cyan("idle")}`);
+          const running = rooms.length > 0;
+          // Running agents get the accent color; idle agents stay muted.
+          const nameCol = running
+            ? chalk.cyanBright.bold(a.name.padEnd(14))
+            : chalk.white(a.name.padEnd(14));
+          if (!running) {
+            rows.push(`    ${nameCol}${chalk.gray("idle")}`);
           } else {
             rows.push(
-              `    ${nameCol}${chalk.green("running")}  ${chalk.white(rooms.join(", "))}`,
+              `    ${nameCol}${chalk.cyanBright("running")}  ${chalk.white(rooms.join(", "))}`,
             );
           }
         }
@@ -372,7 +396,7 @@ export function App() {
         return;
       }
     },
-    { isActive: !editorFile && !settingsOpen && !runSelector && !posScreen && !logsOpen && !strategyOpen }
+    { isActive: !editorFile && !settingsOpen && !runSelector && !posScreen && !logsOpen && !strategyOpen && !scriptsScreen }
   );
 
   const handleSubmit = useCallback(
@@ -477,6 +501,9 @@ export function App() {
           if (result.openStrategyScreen) {
             setStrategyOpen(true);
           }
+          if (result.openScriptsScreen) {
+            setScriptsScreen(result.openScriptsScreen);
+          }
           if (result.stream) {
             const session = result.stream;
             appendLines("");
@@ -502,6 +529,9 @@ export function App() {
                 setBusy(null);
                 streamingRef.current += chunk;
                 setStreamingText(streamingRef.current);
+              },
+              setStatus: (label: string | null) => {
+                setBusy(label);
               },
               finalize: (extra?: string[]) => {
                 setBusy(null);
@@ -592,6 +622,9 @@ export function App() {
             if (result.kind === "ok") {
               appendLines(log.success(result.message));
               if (runSelector.mode === "stop") {
+                if (result.warning) {
+                  appendLines(log.raw(chalk.yellow(`  [!] ${result.warning}`)));
+                }
                 appendLines(
                   log.dim(
                     `  Stop does not close any open positions. (Use "pos ${runSelector.agentName}" once positions land.)`,
@@ -646,9 +679,27 @@ export function App() {
         <StrategyScreen
           height={termHeight}
           width={termWidth}
+          activeAgent={activeAgent}
           onClose={() => {
             setStrategyOpen(false);
             appendLines(log.dim("  Strategies closed."));
+          }}
+          onSaved={(msg) => appendLines(log.success(msg))}
+        />
+      </Box>
+    );
+  }
+
+  if (scriptsScreen) {
+    return (
+      <Box flexDirection="column" height={termHeight} width={termWidth}>
+        <ScriptsScreen
+          height={termHeight}
+          width={termWidth}
+          agentName={scriptsScreen.agentName}
+          onClose={() => {
+            setScriptsScreen(null);
+            appendLines(log.dim("  Scripts closed."));
           }}
           onSaved={(msg) => appendLines(log.success(msg))}
         />

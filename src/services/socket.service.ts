@@ -1,6 +1,12 @@
 import { io, type Socket } from "socket.io-client";
 import { getAuthHeader } from "./auth.service.js";
 import { attachDiscussionHandlers } from "./discussion.client.js";
+import { getAgent } from "./agent.service.js";
+import { ensureAgentLimitsSynced } from "./nodeAgent.service.js";
+import {
+  startSandboxResearch,
+  stopSandboxResearch,
+} from "./sandbox.scheduler.js";
 
 interface SocketEntry {
   socket: Socket;
@@ -46,6 +52,17 @@ async function getSocket(args: {
   });
 
   attachDiscussionHandlers(socket, args.agentName);
+
+  try {
+    const agentCfg = await getAgent(args.agentName);
+    await ensureAgentLimitsSynced({
+      nodeUrl: args.nodeUrl,
+      name: args.agentName,
+      spendingCapUsd: agentCfg.spendingCapUsd ?? 0,
+    });
+  } catch {
+    // cap sync is best-effort
+  }
 
   await new Promise<void>((resolve, reject) => {
     const onConnect = () => {
@@ -101,6 +118,16 @@ export async function runAgent(args: {
   agentName: string;
   roomId: string;
 }): Promise<void> {
+  try {
+    const agentCfg = await getAgent(args.agentName);
+    await ensureAgentLimitsSynced({
+      nodeUrl: args.nodeUrl,
+      name: args.agentName,
+      spendingCapUsd: agentCfg.spendingCapUsd ?? 0,
+    });
+  } catch {
+    // cap sync is best-effort
+  }
   const socket = await getSocket(args);
   const ack = await emitWithAck(socket, "agent:run", {
     agentName: args.agentName,
@@ -109,6 +136,8 @@ export async function runAgent(args: {
   if (!ack.ok) {
     throw new Error(ack.error ?? "Run was rejected by node.");
   }
+  // Warm sandbox signals in the background for this room.
+  startSandboxResearch(args.agentName, args.roomId);
 }
 
 export async function stopAgent(args: {
@@ -124,6 +153,7 @@ export async function stopAgent(args: {
   if (!ack.ok) {
     throw new Error(ack.error ?? "Stop was rejected by node.");
   }
+  stopSandboxResearch(args.agentName, args.roomId);
 }
 
 export function disconnectAllSockets(): void {

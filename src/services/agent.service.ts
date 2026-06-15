@@ -21,6 +21,20 @@ export interface AgentConfig {
   spendingCapUsd?: number;
   /** Id of the strategy assigned to this agent (builtin or user-saved). */
   strategyId?: string;
+  maxLeverage?: number;
+  maxPositionUsd?: number;
+  maxTradesPerDay?: number;
+  /** NOTR vote: hold position or close (flat). Default hold. */
+  notrBehavior?: "flat" | "hold";
+  defaultSlPct?: number;
+  defaultTpPct?: number;
+  /** Per-agent code sandbox tuning. Enabled by default when an LLM is configured. */
+  sandbox?: {
+    enabled?: boolean;
+    timeoutMs?: number;
+    memoryMb?: number;
+    researchBudgetMs?: number;
+  };
 }
 
 const NAME_REGEX = /^[a-zA-Z0-9][a-zA-Z0-9-]*$/;
@@ -49,6 +63,7 @@ export async function createAgent(name: string): Promise<AgentConfig> {
     createdAt: new Date().toISOString(),
     status: "idle",
     strategyId: "always-notr",
+    notrBehavior: "hold",
   };
 
   await writeJson(join(dir, "config.json"), config);

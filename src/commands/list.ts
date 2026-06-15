@@ -33,15 +33,19 @@ export async function listCommand(): Promise<string[]> {
   for (const a of agents) {
     const running = isRunning(a.name);
     const statusLabel = running ? "running" : "idle";
+    // Running agents get the accent color; idle agents stay muted.
     const statusBadge = running
-      ? chalk.green(statusLabel)
-      : chalk.cyan(statusLabel);
+      ? chalk.cyanBright(statusLabel)
+      : chalk.gray(statusLabel);
     const date = a.createdAt.split("T")[0];
+    const nameText = running
+      ? chalk.cyanBright.bold(a.name.padEnd(nameCol))
+      : chalk.white(a.name.padEnd(nameCol));
 
     lines.push(
       log.raw(
         "  " +
-          chalk.white(a.name.padEnd(nameCol)) +
+          nameText +
           statusBadge.padEnd(statusCol + 10) +
           chalk.white(date),
       ),

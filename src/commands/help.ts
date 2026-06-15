@@ -18,8 +18,18 @@ const GROUPS: CommandGroup[] = [
       ["strategy", "Browse and edit strategies (builtin + saved)"],
       ["set strategy <name>", "Assign a strategy (or: set strategy <agent> <name>)"],
       ["cap <name> [usd]", "Show or set the agent's per-trade spending cap"],
+      ["limits <name> [field] [val]", "Risk limits (leverage, NOTR, SL/TP, etc.)"],
       ["history <name>", "Show the agent's discussion decisions"],
       ["delete <name>", "Delete an agent"],
+      ["score [name]", "One agent's excellence score, or all your agents if omitted"],
+    ],
+  },
+  {
+    title: "Balance",
+    commands: [
+      ["balance <agent>", "Wallet + Bybit USDT trading balance"],
+      ["deposit <agent> <amt> [coin]", "Wallet → Bybit; auto-routes to unified USDT (MNT|USDT)"],
+      ["withdraw <agent> <amt>", "Withdraw MNT from Bybit → agent wallet (confirm)"],
     ],
   },
   {
@@ -33,6 +43,16 @@ const GROUPS: CommandGroup[] = [
       ["myrooms [name]", "Show the rooms an agent is currently in"],
       ["stop <name> [room]", "Leave one of the agent's active rooms"],
       ["stop all", "Leave every room for the active agent (all agents if none)"],
+    ],
+  },
+  {
+    title: "Sandbox (dev/ops)",
+    commands: [
+      ["code <agent> <prompt>", "Reason with the code sandbox (ccxt + TA), author/run scripts"],
+      ["code <agent> scripts", "List the agent's saved sandbox scripts"],
+      ["code <agent> run <name>", "Run a saved script; read/rm to inspect or delete"],
+      ["code <agent> install <pkg>", "Install an allowlisted package into the sandbox"],
+      ["code <agent> dry-run <mkt>:<int>", "Simulate a whole session locally (no node, no trade)"],
     ],
   },
   {
@@ -51,7 +71,6 @@ const GROUPS: CommandGroup[] = [
     commands: [
       ["node", "Show current node URL and status"],
       ["node set <url>", "Point CLI at a node and refresh config"],
-      ["GET /score?agent=<name>", "Public API — look up an agent's excellence score"],
       ["rooms", "List rooms delivered by the connected node"],
       ["logs", "Open the live agent discussion chat (Esc to close)"],
     ],
@@ -59,7 +78,7 @@ const GROUPS: CommandGroup[] = [
   {
     title: "System",
     commands: [
-      ["settings", "Open interactive settings (provider, model, API key, network)"],
+      ["settings", "Open interactive settings (provider, model, API key, network, chain)"],
       ["dir", "Show agents directory path"],
       ["clear", "Clear the output pane"],
       ["help", "Show this help message"],

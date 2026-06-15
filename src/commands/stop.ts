@@ -8,6 +8,7 @@ import { removeAgentRoom, setAgentRooms } from "../services/runs.cache.js";
 import { setBusy } from "../utils/busy.js";
 import { log } from "../utils/logger.js";
 import type { InteractiveResult } from "./index.js";
+import { checkStopWarning } from "./_stop-guard.js";
 
 export async function stopCommand(args: string[]): Promise<InteractiveResult> {
   const name = args[0];
@@ -60,7 +61,14 @@ export async function stopCommand(args: string[]): Promise<InteractiveResult> {
 }
 
 async function execStop(name: string, roomId: string): Promise<InteractiveResult> {
+  return await finishStop(name, roomId);
+}
+
+async function finishStop(name: string, roomId: string): Promise<InteractiveResult> {
   const cfg = await loadCliConfig();
+  // Capture the open-position warning up front; leaving the room never closes
+  // a position, so we surface it after stopping instead of blocking on a prompt.
+  const warning = await checkStopWarning(name, roomId).catch(() => null);
   setBusy(`Leaving ${roomId}...`);
   try {
     await stopAgent({ nodeUrl: cfg.nodeUrl, agentName: name, roomId });
@@ -74,14 +82,18 @@ async function execStop(name: string, roomId: string): Promise<InteractiveResult
   }
   setBusy(null);
   removeAgentRoom(name, roomId);
-  return {
-    lines: [
-      log.success(`${chalk.cyanBright(name)} left ${chalk.green(roomId)}.`),
-      log.dim(
-        `  Stop does not close any open positions. (Use "pos ${name}" to review.)`,
-      ),
-    ],
-  };
+  const lines = [
+    log.success(`${chalk.cyanBright(name)} left ${chalk.green(roomId)}.`),
+  ];
+  if (warning) {
+    lines.push(log.raw(chalk.yellow(`  [!] ${warning}`)));
+  }
+  lines.push(
+    log.dim(
+      `  Stop does not close any open positions. (Use "pos ${name}" to review.)`,
+    ),
+  );
+  return { lines };
 }
 
 /**

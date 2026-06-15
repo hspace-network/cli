@@ -44,6 +44,7 @@ export interface Strategy {
 }
 
 export type BybitNetwork = "mainnet" | "testnet";
+export type ChainId = "mantle" | "mantle-sepolia";
 
 export interface PlatformCreds {
   apiKey: string;
@@ -60,9 +61,11 @@ export interface CliConfig {
   platformKeys?: Record<string, PlatformCreds>;
   platform?: string;
   network?: BybitNetwork;
+  chain?: ChainId;
 }
 
 export const DEFAULT_NETWORK: BybitNetwork = "mainnet";
+export const DEFAULT_CHAIN: ChainId = "mantle";
 
 export interface NodeConfig {
   version: string;
@@ -75,7 +78,8 @@ export interface NodeConfig {
   defaults: NodeDefaults;
 }
 
-export const DEFAULT_NODE_URL = "http://localhost:3000";
+// export const DEFAULT_NODE_URL = "http://localhost:6161";
+export const DEFAULT_NODE_URL = "https://node.hspace.dev";
 
 const FETCH_TIMEOUT_MS = 5000;
 
@@ -142,6 +146,9 @@ export async function loadCliConfig(): Promise<CliConfig> {
     if (raw.network === "mainnet" || raw.network === "testnet") {
       cfg.network = raw.network;
     }
+    if (raw.chain === "mantle" || raw.chain === "mantle-sepolia") {
+      cfg.chain = raw.chain;
+    }
 
     const apiKeys = parseApiKeys(raw.apiKeys);
     // Migrate a legacy single apiKey onto the selected provider.
@@ -188,6 +195,24 @@ export async function updateCliConfig(patch: Partial<CliConfig>): Promise<CliCon
 
 export function getEffectiveNetwork(cfg: CliConfig): BybitNetwork {
   return cfg.network === "testnet" ? "testnet" : "mainnet";
+}
+
+export function getEffectiveChain(cfg: CliConfig): ChainId {
+  return cfg.chain === "mantle-sepolia" ? "mantle-sepolia" : "mantle";
+}
+
+/** Returns an error message when chain and Bybit network are mismatched. */
+export function validateChainNetworkPair(
+  chain: ChainId,
+  network: BybitNetwork,
+): string | null {
+  if (chain === "mantle" && network !== "mainnet") {
+    return 'Chain "mantle" must be paired with Bybit network "mainnet".';
+  }
+  if (chain === "mantle-sepolia" && network !== "testnet") {
+    return 'Chain "mantle-sepolia" must be paired with Bybit network "testnet".';
+  }
+  return null;
 }
 
 export function getProviderApiKey(

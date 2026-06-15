@@ -109,6 +109,18 @@ function buildRows(session: SessionLog, width: number): Row[] {
           rows.push({ text: line, dim: true });
         }
       }
+    } else if (entry.role === "code") {
+      const failed = entry.ok === false;
+      rows.push({
+        text: `  ⌨ ${entry.agentName} ${entry.text}`,
+        color: failed ? "red" : "cyan",
+        dim: !failed,
+      });
+      if (entry.output && entry.output.trim()) {
+        for (const line of wrap(entry.output.trim(), bodyWidth)) {
+          rows.push({ text: `      ${line}`, color: failed ? "red" : undefined, dim: !failed });
+        }
+      }
     }
   }
   return rows;
