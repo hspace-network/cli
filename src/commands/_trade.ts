@@ -21,6 +21,7 @@ import { parseOrderArgs } from "../cli/order-args.js";
 import { setBusy } from "../utils/busy.js";
 import { log } from "../utils/logger.js";
 import { formatTradeError } from "./_trade-errors.js";
+import { blockIfAvantis } from "./_venue-guard.js";
 
 interface CreateOrderResult {
   orderId?: string;
@@ -48,6 +49,9 @@ export async function executeOpen(
   } catch (err) {
     return [log.error((err as Error).message)];
   }
+
+  const blocked = await blockIfAvantis(agentName, `/${side}`);
+  if (blocked) return blocked;
 
   const cfg = await loadCliConfig();
   const creds = getPlatformCreds(cfg, "Bybit");

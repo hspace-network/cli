@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { bybitGet, bybitPost, type BybitCreds } from "./bybit.service.js";
 import type { BybitNetwork } from "./config.service.js";
-import { DEPOSIT_CHAIN, TRADING_COIN } from "./deposit-assets.js";
+import type { ChainProfile } from "./deposit-assets.js";
 
-export { DEPOSIT_CHAIN, TRADING_COIN };
-/** Native gas / withdraw coin on Mantle */
-export const DEPOSIT_COIN = "MNT";
+/** Bybit unified account perp margin coin — hspace trades USDT-settled perps. */
+export const UNIFIED_COIN = "USDT";
 const CONVERT_ACCOUNT_FUND = "eb_convert_funding";
 
 interface DepositAddressResult {
@@ -57,25 +56,25 @@ interface WithdrawCreateResult {
   id?: string;
 }
 
+/** Bybit deposit address for `coin` on `bybitChain` (e.g. MANTLE, BASE). */
 export async function getDepositAddress(
   network: BybitNetwork,
   creds: BybitCreds,
   coin: string,
+  bybitChain: string,
 ): Promise<string> {
   const result = await bybitGet<DepositAddressResult>(
     network,
     "/v5/asset/deposit/query-address",
-    { coin, chainType: DEPOSIT_CHAIN },
+    { coin, chainType: bybitChain },
     creds,
   );
   const chain = result.chains?.find(
-    (c) =>
-      c.chainType?.toUpperCase() === DEPOSIT_CHAIN ||
-      c.chainType?.toLowerCase().includes("mantle"),
+    (c) => c.chainType?.toUpperCase() === bybitChain.toUpperCase(),
   );
   const addr = chain?.addressDeposit ?? result.chains?.[0]?.addressDeposit;
   if (!addr) {
-    throw new Error(`No ${coin} deposit address on ${DEPOSIT_CHAIN} from Bybit.`);
+    throw new Error(`No ${coin} deposit address on ${bybitChain} from Bybit.`);
   }
   return addr;
 }
@@ -137,22 +136,26 @@ export interface BybitTradingBalances {
   usdtWallet: number;
   usdtEquity: number;
   totalAvailableUsd: number;
-  mntFund: number;
-  mntUnified: number;
+  /** Native gas coin (MNT/ETH) held on Bybit. */
+  nativeCoin: string;
+  nativeFund: number;
+  nativeUnified: number;
 }
 
 export async function getBybitTradingBalances(
   network: BybitNetwork,
   creds: BybitCreds,
+  profile: ChainProfile,
 ): Promise<BybitTradingBalances> {
-  const [unifiedUsdt, unifiedMnt, fundMnt, unifiedAccount] = await Promise.all([
-    getUnifiedCoinBalance(network, creds, TRADING_COIN),
-    getUnifiedCoinBalance(network, creds, DEPOSIT_COIN),
-    getFundCoinBalance(network, creds, DEPOSIT_COIN),
+  const native = profile.nativeCoin;
+  const [unifiedUsdt, unifiedNative, fundNative, unifiedAccount] = await Promise.all([
+    getUnifiedCoinBalance(network, creds, UNIFIED_COIN),
+    getUnifiedCoinBalance(network, creds, native),
+    getFundCoinBalance(network, creds, native),
     bybitGet<WalletBalanceResult>(
       network,
       "/v5/account/wallet-balance",
-      { accountType: "UNIFIED", coin: TRADING_COIN },
+      { accountType: "UNIFIED", coin: UNIFIED_COIN },
       creds,
     ),
   ]);
@@ -161,18 +164,20 @@ export async function getBybitTradingBalances(
     usdtWallet: unifiedUsdt.wallet,
     usdtEquity: unifiedUsdt.equity,
     totalAvailableUsd: Number(account?.totalAvailableBalance ?? "0"),
-    mntFund: fundMnt.wallet,
-    mntUnified: unifiedMnt.wallet,
+    nativeCoin: native,
+    nativeFund: fundNative.wallet,
+    nativeUnified: unifiedNative.wallet,
   };
 }
 
-export async function getBybitMntBalances(
+export async function getBybitCoinBalances(
   network: BybitNetwork,
   creds: BybitCreds,
+  coin: string,
 ): Promise<{ unified: number; fund: number }> {
   const [unified, fund] = await Promise.all([
-    getUnifiedCoinBalance(network, creds, DEPOSIT_COIN),
-    getFundCoinBalance(network, creds, DEPOSIT_COIN),
+    getUnifiedCoinBalance(network, creds, coin),
+    getFundCoinBalance(network, creds, coin),
   ]);
   return {
     unified: unified.wallet,
@@ -180,14 +185,15 @@ export async function getBybitMntBalances(
   };
 }
 
-export async function getWithdrawableMnt(
+export async function getWithdrawable(
   network: BybitNetwork,
   creds: BybitCreds,
+  coin: string,
 ): Promise<number> {
   const result = await bybitGet<WithdrawableResult>(
     network,
     "/v5/asset/withdraw/withdrawable-amount",
-    { coin: DEPOSIT_COIN },
+    { coin },
     creds,
   );
   const amt = result.withdrawableAmount ?? result.availableBalance ?? "0";
@@ -198,6 +204,7 @@ export async function getCoinChainInfo(
   network: BybitNetwork,
   creds: BybitCreds,
   coin: string,
+  bybitChain: string,
 ): Promise<{
   depositMin: number;
   withdrawMin: number;
@@ -211,24 +218,13 @@ export async function getCoinChainInfo(
   );
   const row = result.rows?.find((r) => r.coin?.toUpperCase() === coin.toUpperCase());
   const chain = row?.chains?.find(
-    (c) => c.chain?.toUpperCase() === DEPOSIT_CHAIN,
+    (c) => c.chain?.toUpperCase() === bybitChain.toUpperCase(),
   );
   return {
     depositMin: Number(chain?.depositMin ?? "0"),
     withdrawMin: Number(chain?.withdrawMin ?? "0"),
     withdrawFee: Number(chain?.withdrawFee ?? "0"),
   };
-}
-
-export async function getMntChainInfo(
-  network: BybitNetwork,
-  creds: BybitCreds,
-): Promise<{
-  depositMin: number;
-  withdrawMin: number;
-  withdrawFee: number;
-}> {
-  return getCoinChainInfo(network, creds, DEPOSIT_COIN);
 }
 
 export async function interTransfer(args: {
@@ -256,12 +252,13 @@ export async function interTransfer(args: {
 export async function transferUnifiedToFund(
   network: BybitNetwork,
   creds: BybitCreds,
+  coin: string,
   amount: string,
 ): Promise<void> {
   await interTransfer({
     network,
     creds,
-    coin: DEPOSIT_COIN,
+    coin,
     amount,
     fromAccountType: "UNIFIED",
     toAccountType: "FUND",
@@ -320,13 +317,13 @@ async function transferFundUsdtToUnified(
   network: BybitNetwork,
   creds: BybitCreds,
 ): Promise<number> {
-  const fundUsdt = await getFundCoinBalance(network, creds, TRADING_COIN);
+  const fundUsdt = await getFundCoinBalance(network, creds, UNIFIED_COIN);
   const transferAmount = fundUsdt.transfer > 0 ? fundUsdt.transfer : fundUsdt.wallet;
   if (transferAmount <= 0) return 0;
   await interTransfer({
     network,
     creds,
-    coin: TRADING_COIN,
+    coin: UNIFIED_COIN,
     amount: trimAmount(transferAmount),
     fromAccountType: "FUND",
     toAccountType: "UNIFIED",
@@ -347,7 +344,7 @@ async function convertFundCoinToUsdt(args: {
     {
       accountType: CONVERT_ACCOUNT_FUND,
       fromCoin: args.fromCoin,
-      toCoin: TRADING_COIN,
+      toCoin: UNIFIED_COIN,
       requestCoin: args.fromCoin,
       requestAmount,
     },
@@ -375,7 +372,7 @@ async function convertFundCoinToUsdt(args: {
 
 /**
  * Move a freshly credited fund deposit into unified USDT trading.
- * USDT → inter-transfer. Any other coin → convert to USDT, then transfer.
+ * USDT → inter-transfer. Any other coin (USDC, MNT, …) → convert to USDT, then transfer.
  */
 export async function routeFundDepositToTrading(args: {
   network: BybitNetwork;
@@ -384,10 +381,10 @@ export async function routeFundDepositToTrading(args: {
 }): Promise<RouteDepositResult> {
   const coin = args.coin.toUpperCase();
   try {
-    if (coin === TRADING_COIN) {
+    if (coin === UNIFIED_COIN) {
       const moved = await transferFundUsdtToUnified(args.network, args.creds);
       if (moved <= 0) {
-        return { status: "skipped", reason: `no ${TRADING_COIN} in fund account` };
+        return { status: "skipped", reason: `no ${UNIFIED_COIN} in fund account` };
       }
       return { status: "ready", usdtAmount: moved, via: "transfer" };
     }
@@ -470,6 +467,8 @@ export async function pollDepositCredit(args: {
 export async function createWithdraw(args: {
   network: BybitNetwork;
   creds: BybitCreds;
+  coin: string;
+  bybitChain: string;
   address: string;
   amount: string;
 }): Promise<string> {
@@ -477,8 +476,8 @@ export async function createWithdraw(args: {
     args.network,
     "/v5/asset/withdraw/create",
     {
-      coin: DEPOSIT_COIN,
-      chain: DEPOSIT_CHAIN,
+      coin: args.coin,
+      chain: args.bybitChain,
       address: args.address,
       amount: args.amount,
       timestamp: Date.now(),

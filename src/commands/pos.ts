@@ -1,6 +1,7 @@
 import { getAgent } from "../services/agent.service.js";
 import { loadCliConfig, getPlatformCreds } from "../services/config.service.js";
 import { log } from "../utils/logger.js";
+import { blockIfAvantis } from "./_venue-guard.js";
 import type { InteractiveResult } from "./index.js";
 
 export async function posCommand(args: string[]): Promise<InteractiveResult> {
@@ -14,6 +15,9 @@ export async function posCommand(args: string[]): Promise<InteractiveResult> {
   } catch (err) {
     return { lines: [log.error((err as Error).message)] };
   }
+
+  const blocked = await blockIfAvantis(agentName, "pos");
+  if (blocked) return { lines: blocked };
 
   const cfg = await loadCliConfig();
   if (!getPlatformCreds(cfg, "Bybit")) {

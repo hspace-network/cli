@@ -7,15 +7,17 @@ import {
   getEffectiveSelection,
   getEffectiveNetwork,
   getEffectiveChain,
-  validateChainNetworkPair,
   getProviderApiKey,
   getPlatformCreds,
+  ALL_CHAINS,
+  CHAIN_NETWORK,
   type CliConfig,
   type BybitNetwork,
   type ChainId,
   type Provider,
   type Platform,
 } from "../services/config.service.js";
+import { chainProfile } from "../services/deposit-assets.js";
 
 interface SettingsScreenProps {
   height: number;
@@ -53,10 +55,6 @@ const NETWORKS: { id: BybitNetwork; label: string }[] = [
   { id: "testnet", label: "testnet" },
 ];
 
-const CHAINS: { id: ChainId; label: string }[] = [
-  { id: "mantle", label: "mantle" },
-  { id: "mantle-sepolia", label: "mantle-sepolia" },
-];
 
 function maskApiKey(key: string | undefined): string {
   if (!key) return "(not set)";
@@ -93,6 +91,12 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
   const cached = getCachedNodeConfig();
   const providers = cached?.providers ?? [];
   const platforms = cached?.platforms ?? [];
+  // Chains come from the node (like providers); fall back to the CLI's built-in
+  // set when offline so the picker still works.
+  const chainOptions: { id: ChainId; label: string }[] =
+    cached && cached.chains.length > 0
+      ? cached.chains.map((c) => ({ id: c.id as ChainId, label: c.label }))
+      : ALL_CHAINS.map((id) => ({ id, label: chainProfile(id).label }));
   const effective = config
     ? getEffectiveSelection(config, cached?.defaults, providers)
     : { provider: undefined, model: undefined, platform: undefined };
@@ -218,7 +222,7 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
         }
 
         if (field.id === "chain") {
-          const idx = CHAINS.findIndex((c) => c.id === getEffectiveChain(config));
+          const idx = chainOptions.findIndex((c) => c.id === getEffectiveChain(config));
           setSubIdx(idx === -1 ? 0 : idx);
           setView("chain");
           return;
@@ -377,12 +381,14 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
       if (key.return) {
         const chosen = NETWORKS[subIdx];
         if (!chosen) return;
-        const pairErr = validateChainNetworkPair(getEffectiveChain(config), chosen.id);
-        if (pairErr) {
-          setNotice(pairErr);
-          return;
+        const patch: Partial<CliConfig> = { network: chosen.id };
+        // Keep the chain compatible: if the current chain is on the other tier,
+        // snap to a chain that matches the chosen network.
+        if (CHAIN_NETWORK[getEffectiveChain(config)] !== chosen.id) {
+          const compat = chainOptions.find((c) => CHAIN_NETWORK[c.id] === chosen.id);
+          if (compat) patch.chain = compat.id;
         }
-        persist({ network: chosen.id }).then(() => setView("list"));
+        persist(patch).then(() => setView("list"));
         return;
       }
       return;
@@ -398,18 +404,16 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
         return;
       }
       if (key.downArrow) {
-        setSubIdx((i) => Math.min(CHAINS.length - 1, i + 1));
+        setSubIdx((i) => Math.min(chainOptions.length - 1, i + 1));
         return;
       }
       if (key.return) {
-        const chosen = CHAINS[subIdx];
+        const chosen = chainOptions[subIdx];
         if (!chosen) return;
-        const pairErr = validateChainNetworkPair(chosen.id, getEffectiveNetwork(config));
-        if (pairErr) {
-          setNotice(pairErr);
-          return;
-        }
-        persist({ chain: chosen.id }).then(() => setView("list"));
+        // Chain fully determines the network tier — set both so the pair stays valid.
+        persist({ chain: chosen.id, network: CHAIN_NETWORK[chosen.id] }).then(() =>
+          setView("list"),
+        );
         return;
       }
       return;
@@ -751,9 +755,9 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
         {renderHeader()}
         <Box flexDirection="column" flexGrow={1} paddingX={2} paddingY={1}>
           <Text color="cyan" bold>Select Chain</Text>
-          <Text dimColor>MNT deposits and withdrawals use this chain.</Text>
+          <Text dimColor>Your agent wallet + funding rail run on this chain.</Text>
           <Box marginTop={1} flexDirection="column">
-            {CHAINS.map((c, i) => {
+            {chainOptions.map((c, i) => {
               const selected = i === subIdx;
               const current = c.id === currentChain;
               const fromDefault = current && !config.chain;
@@ -772,7 +776,7 @@ export function SettingsScreen({ height, width, onClose }: SettingsScreenProps) 
             })}
           </Box>
         </Box>
-        {renderFooter("Default: mantle — pair mantle-sepolia with testnet")}
+        {renderFooter("Mainnet: mantle/base · Testnet: mantle-sepolia/base-sepolia")}
       </Box>
     );
   }

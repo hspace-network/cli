@@ -28,18 +28,11 @@ import { makeCodeReporters } from "./sandbox.reporters.js";
 import { writeSignals } from "./signals.service.js";
 import { resolveSymbol, type BybitCreds } from "./bybit.service.js";
 import {
-  getOpenPosition,
-  closePosition,
-  openMarketNotional,
-  reducePosition,
   positionNotionalUsd,
-  fetchPositionSnapshot,
-  getSymbolLeverage,
-  setPositionStops,
   type PositionSnapshot,
   type PositionSide,
 } from "./positions.service.js";
-import { fetchLastPrice, getInstrument } from "./bybit.service.js";
+import { getVenue, type TradingVenue, type StopResult } from "./venue.js";
 import { emitDiscussionEvent } from "./discussion.bus.js";
 import { readActionableSignalsBlock } from "./signals.service.js";
 import { readAgentMemory } from "./memory.service.js";
@@ -53,6 +46,46 @@ import {
 
 const attached = new WeakSet<Socket>();
 const seenEvents = new Set<string>();
+
+// If the CLI produced a final vote later than the node's vote window (minus this
+// margin for the ack's return trip), the node has already recorded the agent as
+// an abstainer, so we must NOT execute the trade — otherwise a real, unmanaged
+// leveraged position opens that the platform's record, score, and anchored proof
+// all deny. Skipping is the safe direction: at worst we miss one resize.
+const VOTE_ACK_SAFETY_MS = 3_000;
+const DEFAULT_VOTE_TIMEOUT_MS = 30_000;
+
+// All local agents share ONE Bybit credential, so the account's net position on
+// a symbol is shared. Without coordination, two agents on the same symbol (e.g.
+// BTCUSDT:1m and BTCUSDT:1h) reconcile the same position and flip each other's
+// real trades every session, and concurrent reconciles net against each other.
+// Guard: serialize reconciliation per symbol, and let the first agent to hold a
+// live position "own" that symbol — others hold instead of disturbing it.
+// (The real fix is per-agent API keys; this makes the shared account safe today.)
+const symbolLocks = new Map<string, Promise<void>>();
+const symbolOwner = new Map<string, string>();
+
+/**
+ * Run fn as an exclusive critical section per symbol (promise-chain mutex).
+ * Exported for tests — see test/symbol-lock.test.ts.
+ */
+export async function withSymbolLock<T>(symbol: string, fn: () => Promise<T>): Promise<T> {
+  const prev = symbolLocks.get(symbol) ?? Promise.resolve();
+  let done!: () => void;
+  const mine = new Promise<void>((resolve) => {
+    done = resolve;
+  });
+  const chained = prev.then(() => mine);
+  symbolLocks.set(symbol, chained);
+  await prev.catch(() => {});
+  try {
+    return await fn();
+  } finally {
+    done();
+    // Drop the entry only if nobody chained after us, to avoid unbounded growth.
+    if (symbolLocks.get(symbol) === chained) symbolLocks.delete(symbol);
+  }
+}
 
 interface SessionRecord {
   sessionId: string;
@@ -104,6 +137,7 @@ interface AgentRunContext {
   ctx: DiscussionContext;
   network: BybitNetwork;
   creds: BybitCreds | null;
+  venue: TradingVenue | null;
 }
 
 /**
@@ -172,13 +206,14 @@ async function buildContext(
   }
 
   const creds = getPlatformCreds(cfg, "Bybit") ?? null;
+  const venue = await getVenue(agentName, agentCfg, { network, creds });
 
   // Current live position on this symbol, so the agent reasons about what it
   // already holds (add/reduce/flip/hold) rather than deciding in a vacuum.
   let position: string | undefined;
-  if (creds) {
+  if (venue) {
     try {
-      const pos = await getOpenPosition(resolveSymbol(market), network, creds);
+      const pos = await venue.getOpenPosition(resolveSymbol(market));
       position = pos
         ? `${pos.side.toUpperCase()} ${pos.size} @ ${pos.avgPrice}`
         : "flat (no open position)";
@@ -206,6 +241,7 @@ async function buildContext(
     },
     network,
     creds,
+    venue,
   };
 }
 
@@ -251,35 +287,11 @@ interface ReconcileResult {
   position?: PositionSnapshot | null;
 }
 
-async function snapshotAfter(
-  symbol: string,
-  network: BybitNetwork,
-  creds: BybitCreds,
-): Promise<PositionSnapshot | null> {
-  return fetchPositionSnapshot(symbol, network, creds);
-}
-
-async function applyAutoStops(
-  symbol: string,
-  side: PositionSide,
-  entryPrice: number,
-  agentCfg: AgentConfig,
-  network: BybitNetwork,
-  creds: BybitCreds,
-): Promise<void> {
-  try {
-    await setPositionStops({
-      symbol,
-      side,
-      entryPrice,
-      slPct: agentCfg.defaultSlPct,
-      tpPct: agentCfg.defaultTpPct,
-      network,
-      creds,
-    });
-  } catch {
-    // stops are best-effort
-  }
+/** Suffix warning appended to an action message when a requested stop failed. */
+function stopWarning(stops: StopResult): string {
+  return stops.requested && !stops.set
+    ? ` — WARNING: stop-loss NOT set (${stops.error ?? "unknown"})`
+    : "";
 }
 
 async function guardTradeLimits(
@@ -287,8 +299,8 @@ async function guardTradeLimits(
   targetUsd: number,
   symbol: string,
 ): Promise<ReconcileResult | null> {
-  const { agentCfg, network, creds } = run;
-  if (!creds) return null;
+  const { agentCfg, venue } = run;
+  if (!venue) return null;
 
   const maxTrades = agentCfg.maxTradesPerDay ?? 50;
   const todayCount = await getTradeCountToday(run.agentName);
@@ -311,7 +323,7 @@ async function guardTradeLimits(
   }
 
   const maxLev = agentCfg.maxLeverage ?? 10;
-  const lev = await getSymbolLeverage(symbol, network, creds);
+  const lev = await venue.getSymbolLeverage(symbol);
   if (lev !== null && lev > maxLev) {
     return {
       type: "skipped",
@@ -331,20 +343,27 @@ async function reconcilePosition(
   run: AgentRunContext,
   vote: VoteResult,
 ): Promise<ReconcileResult> {
-  const { ctx, network, creds, agentCfg } = run;
-  if (!creds) {
+  const { ctx, venue, agentCfg } = run;
+  if (!venue) {
     return {
       type: "skipped",
       ok: false,
-      message: "no Bybit credentials set — skipped auto-trade",
+      message: "no trading venue configured — skipped auto-trade",
     };
   }
 
   const symbol = resolveSymbol(ctx.market);
   const notrBehavior = agentCfg.notrBehavior ?? "hold";
+  const stopArgs = (side: PositionSide, entryPrice: number) => ({
+    symbol,
+    side,
+    entryPrice,
+    slPct: agentCfg.defaultSlPct,
+    tpPct: agentCfg.defaultTpPct,
+  });
 
   try {
-    const position = await getOpenPosition(symbol, network, creds);
+    const position = await venue.getOpenPosition(symbol);
 
     if (vote.way === "NOTR") {
       if (!position) {
@@ -355,10 +374,10 @@ async function reconcilePosition(
           type: "none",
           ok: true,
           message: "NOTR — held position",
-          position: await snapshotAfter(symbol, network, creds),
+          position: await venue.fetchPositionSnapshot(symbol),
         };
       }
-      const closed = await closePosition(symbol, network, creds);
+      const closed = await venue.closePosition(symbol);
       await incrementTradeCount(run.agentName);
       return {
         type: "close",
@@ -368,7 +387,7 @@ async function reconcilePosition(
       };
     }
 
-    const targetSide = vote.way === "LONG" ? "long" : "short";
+    const targetSide: PositionSide = vote.way === "LONG" ? "long" : "short";
     const targetUsd = vote.sizeUsd;
 
     const guard = await guardTradeLimits(run, targetUsd, symbol);
@@ -383,19 +402,19 @@ async function reconcilePosition(
           position: null,
         };
       }
-      const opened = await openMarketNotional(symbol, targetSide, targetUsd, network, creds);
-      await applyAutoStops(symbol, targetSide, opened.price, agentCfg, network, creds);
+      const opened = await venue.openMarketNotional(symbol, targetSide, targetUsd);
+      const openStops = await venue.setPositionStops(stopArgs(targetSide, opened.price));
       await incrementTradeCount(run.agentName);
       return {
         type: "open",
         ok: true,
-        message: `opened ${vote.way} ${symbol} ${opened.qty} (~$${targetUsd})`,
-        position: await snapshotAfter(symbol, network, creds),
+        message: `opened ${vote.way} ${symbol} ${opened.qty} (~$${targetUsd})${stopWarning(openStops)}`,
+        position: await venue.fetchPositionSnapshot(symbol),
       };
     }
 
     if (position.side !== targetSide) {
-      await closePosition(symbol, network, creds);
+      await venue.closePosition(symbol);
       if (targetUsd <= 0) {
         await incrementTradeCount(run.agentName);
         return {
@@ -405,21 +424,21 @@ async function reconcilePosition(
           position: null,
         };
       }
-      const opened = await openMarketNotional(symbol, targetSide, targetUsd, network, creds);
-      await applyAutoStops(symbol, targetSide, opened.price, agentCfg, network, creds);
+      const opened = await venue.openMarketNotional(symbol, targetSide, targetUsd);
+      const flipStops = await venue.setPositionStops(stopArgs(targetSide, opened.price));
       await incrementTradeCount(run.agentName);
       return {
         type: "flip",
         ok: true,
-        message: `flipped to ${vote.way} ${symbol} ${opened.qty} (~$${targetUsd})`,
-        position: await snapshotAfter(symbol, network, creds),
+        message: `flipped to ${vote.way} ${symbol} ${opened.qty} (~$${targetUsd})${stopWarning(flipStops)}`,
+        position: await venue.fetchPositionSnapshot(symbol),
       };
     }
 
-    const instrument = await getInstrument(symbol, network);
-    const price = await fetchLastPrice(instrument.symbol, network);
+    const instrument = await venue.getInstrument(symbol);
+    const price = await venue.fetchLastPrice(symbol);
     if (price === null || !Number.isFinite(price) || price <= 0) {
-      throw new Error(`Could not fetch a price for ${instrument.symbol}.`);
+      throw new Error(`Could not fetch a price for ${symbol}.`);
     }
 
     const currentUsd = positionNotionalUsd(position, price);
@@ -427,7 +446,7 @@ async function reconcilePosition(
     const tolerance = Math.max(currentUsd * 0.02, minLotCost);
 
     if (targetUsd <= 0) {
-      const closed = await closePosition(symbol, network, creds);
+      const closed = await venue.closePosition(symbol);
       await incrementTradeCount(run.agentName);
       return {
         type: "close",
@@ -443,34 +462,33 @@ async function reconcilePosition(
         type: "hold",
         ok: true,
         message: `kept ${vote.way} ${symbol} (~$${currentUsd.toFixed(0)})`,
-        position: await snapshotAfter(symbol, network, creds),
+        position: await venue.fetchPositionSnapshot(symbol),
       };
     }
 
     if (diff > tolerance) {
       const addGuard = await guardTradeLimits(run, targetUsd, symbol);
       if (addGuard) return addGuard;
-      const added = await openMarketNotional(symbol, targetSide, diff, network, creds);
-      await applyAutoStops(symbol, targetSide, added.price, agentCfg, network, creds);
+      const added = await venue.openMarketNotional(symbol, targetSide, diff);
+      const addStops = await venue.setPositionStops(stopArgs(targetSide, added.price));
       await incrementTradeCount(run.agentName);
       return {
         type: "add",
         ok: true,
-        message: `added to ${vote.way} ${symbol} +${added.qty} (~$${diff.toFixed(0)})`,
-        position: await snapshotAfter(symbol, network, creds),
+        message: `added to ${vote.way} ${symbol} +${added.qty} (~$${diff.toFixed(0)})${stopWarning(addStops)}`,
+        position: await venue.fetchPositionSnapshot(symbol),
       };
     }
 
     const reduceUsd = currentUsd - targetUsd;
     const reduceQty = reduceUsd / price;
-    const reduced = await reducePosition(symbol, reduceQty, network, creds);
+    const reduced = await venue.reducePosition(symbol, reduceQty);
     await incrementTradeCount(run.agentName);
-    const snap = await snapshotAfter(symbol, network, creds);
     return {
       type: "reduce",
       ok: true,
       message: `reduced ${vote.way} ${symbol} -${reduced?.size ?? reduceQty.toFixed(4)} (~$${reduceUsd.toFixed(0)})`,
-      position: snap,
+      position: await venue.fetchPositionSnapshot(symbol),
     };
   } catch (err) {
     return {
@@ -479,6 +497,49 @@ async function reconcilePosition(
       message: (err as Error).message,
     };
   }
+}
+
+/**
+ * reconcilePosition wrapped in the shared-account guard: serialize per symbol,
+ * and refuse to disturb a symbol another local agent currently holds on the one
+ * shared Bybit account. Ownership is claimed by whoever holds a live position
+ * and released when the symbol goes flat. Avantis agents each trade their own
+ * wallet, so they need no cross-agent guard and reconcile directly.
+ */
+async function reconcileGuarded(
+  run: AgentRunContext,
+  vote: VoteResult,
+): Promise<ReconcileResult> {
+  const { ctx, venue } = run;
+  if (!venue || venue.id !== "Bybit") return reconcilePosition(run, vote);
+  const symbol = resolveSymbol(ctx.market);
+
+  return withSymbolLock(symbol, async () => {
+    const owner = symbolOwner.get(symbol);
+    if (owner && owner !== run.agentName) {
+      // Confirm the owner's position is still live before blocking, so a crashed
+      // or closed-out owner cannot lock the symbol to itself forever.
+      const held = await venue.getOpenPosition(symbol);
+      if (held) {
+        return {
+          type: "skipped",
+          ok: false,
+          message: `${symbol} is held by ${owner} on the shared Bybit account — not trading it`,
+        };
+      }
+      symbolOwner.delete(symbol);
+    }
+
+    const result = await reconcilePosition(run, vote);
+
+    // A successful reconcile that leaves a live position claims the symbol for
+    // this agent; a flat outcome releases it. Errors/skips leave ownership as-is.
+    if (result.ok) {
+      if (result.position) symbolOwner.set(symbol, run.agentName);
+      else symbolOwner.delete(symbol);
+    }
+    return result;
+  });
 }
 
 export function attachDiscussionHandlers(
@@ -496,6 +557,7 @@ export function attachDiscussionHandlers(
         roomId?: string;
         phase?: "initial" | "final";
         transcript?: unknown;
+        timeoutMs?: number;
       },
       ack?: (response: {
         way: string;
@@ -503,6 +565,7 @@ export function attachDiscussionHandlers(
         sizeUsd: number;
       }) => void,
     ) => {
+      const receivedAt = Date.now();
       try {
         const roomId = payload?.roomId ?? "";
         const sessionId = payload?.sessionId ?? "";
@@ -573,9 +636,41 @@ export function attachDiscussionHandlers(
           record.final = vote;
           if (record.action) return;
           if (!once(`reconcile:${agentName}:${sessionId}`)) return;
+
+          // Do not trade a vote we produced after the node's window closed — by
+          // then the node has recorded this agent as an abstainer, so opening a
+          // real position would diverge from the record, the score, and the
+          // on-chain proof. Skip and surface why.
+          const timeoutMs =
+            typeof payload?.timeoutMs === "number" && payload.timeoutMs > 0
+              ? payload.timeoutMs
+              : DEFAULT_VOTE_TIMEOUT_MS;
+          if (Date.now() - receivedAt > timeoutMs - VOTE_ACK_SAFETY_MS) {
+            const late = {
+              type: "skipped",
+              ok: false,
+              message: `vote ready after the ${Math.round(
+                timeoutMs / 1000,
+              )}s window — not trading (node recorded an abstain)`,
+            };
+            record.action = late;
+            emitDiscussionEvent({
+              type: "action",
+              sessionId,
+              roomId,
+              agentName,
+              kind: "skipped",
+              ok: false,
+              message: late.message,
+            });
+            await writeHistory(record);
+            records.delete(recordKey(agentName, sessionId));
+            return;
+          }
+
           record.action = { type: "pending", ok: true, message: "executing…" };
           await writeHistory(record);
-          const action = await reconcilePosition(run, vote);
+          const action = await reconcileGuarded(run, vote);
           record.action = action;
           emitDiscussionEvent({
             type: "action",
@@ -599,7 +694,21 @@ export function attachDiscussionHandlers(
           await writeHistory(record);
           records.delete(recordKey(agentName, sessionId));
         }
-      } catch {
+      } catch (err) {
+        // Abstain (safe outcome — never trade on a failed decision), but make
+        // the failure visible instead of silently voting NOTR: a bad model id,
+        // wrong API key, or provider outage would otherwise look like a healthy
+        // "no trade" and never get diagnosed.
+        const reason = err instanceof Error ? err.message : String(err);
+        emitDiscussionEvent({
+          type: "action",
+          sessionId: payload?.sessionId ?? "",
+          roomId: payload?.roomId ?? "",
+          agentName,
+          kind: "error",
+          ok: false,
+          message: `vote failed, abstaining: ${reason}`,
+        });
         ack?.({ way: "NOTR", rationale: "", sizeUsd: 0 });
       }
     },

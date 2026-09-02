@@ -29,6 +29,7 @@ import { depositCommand } from "./deposit.js";
 import { withdrawCommand } from "./withdraw.js";
 import { limitsCommand } from "./limits.js";
 import { codeCommand } from "./code.js";
+import { autoCommand } from "./auto.js";
 
 export interface PendingPrompt {
   prompt: string;
@@ -93,6 +94,7 @@ const commands: Record<string, CommandHandler> = {
   settings: () => settingsCommand(),
   help: () => helpCommand(),
   run: runCommand,
+  auto: autoCommand,
   stop: stopCommand,
   stopall: () => stopallCommand(),
   myrooms: myroomsCommand,

@@ -16,6 +16,7 @@ import {
 import { setBusy } from "../utils/busy.js";
 import { log } from "../utils/logger.js";
 import { formatTradeError } from "./_trade-errors.js";
+import { blockIfAvantis } from "./_venue-guard.js";
 
 interface PositionListResult {
   list?: Array<{ symbol: string; side: string; size: string }>;
@@ -35,6 +36,9 @@ export async function closeCommand(args: string[]): Promise<string[]> {
   } catch (err) {
     return [log.error((err as Error).message)];
   }
+
+  const blocked = await blockIfAvantis(agentName, "/close");
+  if (blocked) return blocked;
 
   const cfg = await loadCliConfig();
   const creds = getPlatformCreds(cfg, "Bybit");

@@ -8,7 +8,9 @@ type LimitField =
   | "maxTradesPerDay"
   | "notr"
   | "sl"
-  | "tp";
+  | "tp"
+  | "platform"
+  | "avantisLeverage";
 
 const FIELD_ALIASES: Record<string, LimitField> = {
   maxleverage: "maxLeverage",
@@ -17,6 +19,10 @@ const FIELD_ALIASES: Record<string, LimitField> = {
   notr: "notr",
   sl: "sl",
   tp: "tp",
+  platform: "platform",
+  venue: "platform",
+  avantislev: "avantisLeverage",
+  avantisleverage: "avantisLeverage",
 };
 
 function showLimits(cfg: AgentConfig): string[] {
@@ -26,6 +32,7 @@ function showLimits(cfg: AgentConfig): string[] {
     log.blank(),
     log.heading(`  Limits — ${cfg.name}`),
     log.blank(),
+    log.raw(`  ${chalk.dim("Venue".padEnd(18))} ${chalk.white(cfg.platform ?? "Bybit")}${cfg.platform === "Avantis" ? chalk.dim(` (lev ${cfg.avantisLeverage ?? 2}x)`) : ""}`),
     log.raw(`  ${chalk.dim("Spending cap".padEnd(18))} ${cap > 0 ? chalk.green(`$${cap}`) : chalk.dim("disabled")}`),
     log.raw(`  ${chalk.dim("Max position".padEnd(18))} ${maxPos > 0 ? chalk.green(`$${maxPos}`) : chalk.dim("(cap)")}`),
     log.raw(`  ${chalk.dim("Max leverage".padEnd(18))} ${chalk.white(String(cfg.maxLeverage ?? 10))}`),
@@ -80,6 +87,18 @@ export async function limitsCommand(args: string[]): Promise<string[]> {
       return [log.error('NOTR behavior must be "hold" or "flat".')];
     }
     patch.notrBehavior = v;
+  } else if (field === "platform") {
+    const v = valueRaw.toLowerCase();
+    if (v !== "bybit" && v !== "avantis") {
+      return [log.error('Venue must be "Bybit" or "Avantis".')];
+    }
+    patch.platform = v === "avantis" ? "Avantis" : "Bybit";
+  } else if (field === "avantisLeverage") {
+    const n = Number(valueRaw);
+    if (!Number.isFinite(n) || n <= 0) {
+      return [log.error("Avantis leverage must be a positive number.")];
+    }
+    patch.avantisLeverage = n;
   } else if (field === "sl" || field === "tp") {
     const n = Number(valueRaw);
     if (!Number.isFinite(n) || n <= 0) {

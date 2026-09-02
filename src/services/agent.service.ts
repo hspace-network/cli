@@ -24,6 +24,10 @@ export interface AgentConfig {
   maxLeverage?: number;
   maxPositionUsd?: number;
   maxTradesPerDay?: number;
+  /** Trading venue. Bybit CEX or Avantis Base perps. Default Bybit. */
+  platform?: "Bybit" | "Avantis";
+  /** Per-trade leverage used when opening on Avantis, clamped to the pair bounds. */
+  avantisLeverage?: number;
   /** NOTR vote: hold position or close (flat). Default hold. */
   notrBehavior?: "flat" | "hold";
   defaultSlPct?: number;

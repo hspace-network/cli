@@ -13,6 +13,7 @@ import {
 import { setBusy } from "../utils/busy.js";
 import { log } from "../utils/logger.js";
 import { formatTradeError } from "./_trade-errors.js";
+import { blockIfAvantis } from "./_venue-guard.js";
 
 export async function cancelCommand(args: string[]): Promise<string[]> {
   const agentName = args[0];
@@ -28,6 +29,10 @@ export async function cancelCommand(args: string[]): Promise<string[]> {
   } catch (err) {
     return [log.error((err as Error).message)];
   }
+
+  const blocked = await blockIfAvantis(agentName, "/cancel");
+  if (blocked) return blocked;
+
   const cfg = await loadCliConfig();
   const creds = getPlatformCreds(cfg, "Bybit");
   if (!creds) {

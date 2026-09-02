@@ -12,12 +12,14 @@ import {
   type Chain,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { mantle, mantleSepoliaTestnet } from "viem/chains";
+import { mantle, mantleSepoliaTestnet, base, baseSepolia } from "viem/chains";
 import type { ChainId } from "./config.service.js";
 
 const CHAINS: Record<ChainId, Chain> = {
   mantle,
   "mantle-sepolia": mantleSepoliaTestnet,
+  base,
+  "base-sepolia": baseSepolia,
 };
 
 export function getViemChain(chainId: ChainId): Chain {

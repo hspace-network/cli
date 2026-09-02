@@ -4,8 +4,7 @@ import {
   getCoinChainInfo,
   pollDepositCredit,
   routeFundDepositToTrading,
-  TRADING_COIN,
-  DEPOSIT_CHAIN,
+  UNIFIED_COIN,
 } from "../services/bybit-asset.service.js";
 import {
   resolveWalletDepositAsset,
@@ -33,12 +32,13 @@ function parseDepositArgs(
   args: string[],
 ): { agentName: string; amountStr: string; coinInput?: string } | { error: string } {
   if (args.length < 2) {
-    return { error: "Usage: deposit <agent> <amount> [MNT|USDT]" };
+    return { error: "Usage: deposit <agent> <amount> [coin]" };
   }
   const agentName = args[0]!;
-  const last = args[args.length - 1]!.trim().toUpperCase();
-  if (args.length >= 3 && (last === "MNT" || last === "USDT")) {
-    return { agentName, amountStr: args[1]!, coinInput: last };
+  const last = args[args.length - 1]!.trim();
+  // A non-numeric trailing arg is a coin symbol (e.g. USDC, ETH, MNT, USDT).
+  if (args.length >= 3 && !Number.isFinite(Number(last))) {
+    return { agentName, amountStr: args[1]!, coinInput: last.toUpperCase() };
   }
   return { agentName, amountStr: args[1]! };
 }
@@ -51,8 +51,11 @@ async function getWalletAssetBalance(
   if (asset.kind === "native") {
     return getWalletMntBalance(walletAddress, chainId);
   }
-  const tokenAddress = asset.tokenAddress![chainId]!;
-  return getWalletTokenBalance({ chainId, tokenAddress, walletAddress });
+  return getWalletTokenBalance({
+    chainId,
+    tokenAddress: asset.tokenAddress!,
+    walletAddress,
+  });
 }
 
 function formatAssetAmount(asset: WalletDepositAsset, wei: bigint): string {
@@ -71,6 +74,34 @@ export async function depositCommand(args: string[]): Promise<string[]> {
   if ("error" in ctx) {
     return [log.error(ctx.error)];
   }
+
+  const { profile } = ctx;
+
+  // Avantis agents trade on-chain from their own wallet — depositing to a CEX
+  // would strand their USDC collateral off Base. Route them to wallet funding.
+  if (ctx.platform === "Avantis") {
+    return [
+      log.error(`${ctx.agentName} is an Avantis agent — it funds itself.`),
+      log.dim(
+        `  Avantis trades on-chain from the agent wallet. Send ${profile.stableCoin} to ${ctx.walletAddress} on ${profile.label}, then check it with "balance". No Bybit deposit needed.`,
+      ),
+    ];
+  }
+
+  // The Bybit CEX funding rail is enabled on Mantle only.
+  if (!profile.bybitRail) {
+    return [
+      log.error(`Bybit deposits aren't wired for ${profile.label}.`),
+      log.dim(
+        `  The Bybit funding rail runs on Mantle. Switch chain to mantle in "settings" to deposit.`,
+      ),
+    ];
+  }
+
+  if (!ctx.creds) {
+    return [log.error('Set your Bybit API key in settings ("settings" → Platform).')];
+  }
+  const creds = ctx.creds;
 
   const asset = resolveWalletDepositAsset(parsed.coinInput, ctx.chainId);
   if ("error" in asset) {
@@ -92,8 +123,8 @@ export async function depositCommand(args: string[]): Promise<string[]> {
   let walletWei: bigint;
   try {
     [depositAddress, chainInfo, walletWei] = await Promise.all([
-      getDepositAddress(ctx.network, ctx.creds, asset.coin),
-      getCoinChainInfo(ctx.network, ctx.creds, asset.coin),
+      getDepositAddress(ctx.network, creds, asset.coin, profile.bybitChain),
+      getCoinChainInfo(ctx.network, creds, asset.coin, profile.bybitChain),
       getWalletAssetBalance(asset, ctx.chainId, ctx.walletAddress),
     ]);
   } catch (err) {
@@ -102,47 +133,47 @@ export async function depositCommand(args: string[]): Promise<string[]> {
     return [log.error(`Could not prepare deposit: ${msg}`)];
   }
 
-  let gasMntWei = 0n;
+  let gasNativeWei = 0n;
   try {
     if (asset.kind === "native") {
-      gasMntWei = await estimateMntTransferGas({
+      gasNativeWei = await estimateMntTransferGas({
         chainId: ctx.chainId,
         from: ctx.privateKey,
         to: depositAddress,
         amountWei,
       });
     } else {
-      gasMntWei = await estimateTokenTransferGas({
+      gasNativeWei = await estimateTokenTransferGas({
         chainId: ctx.chainId,
         from: ctx.privateKey,
-        tokenAddress: asset.tokenAddress![ctx.chainId]!,
+        tokenAddress: asset.tokenAddress!,
         to: depositAddress,
         amountWei,
       });
     }
   } catch {
-    gasMntWei = 0n;
+    gasNativeWei = 0n;
   }
 
   const amountNum = Number(parsed.amountStr);
   if (chainInfo.depositMin > 0 && amountNum < chainInfo.depositMin) {
     return [
       log.error(
-        `Minimum deposit is ${chainInfo.depositMin} ${asset.coin} on ${DEPOSIT_CHAIN}.`,
+        `Minimum deposit is ${chainInfo.depositMin} ${asset.coin} on ${profile.bybitChain}.`,
       ),
     ];
   }
 
-  const walletMntWei = await getWalletMntBalance(ctx.walletAddress, ctx.chainId);
+  const walletNativeWei = await getWalletMntBalance(ctx.walletAddress, ctx.chainId);
   const walletLabel = formatAssetAmount(asset, walletWei);
+  const gas = profile.nativeCoin;
 
   if (asset.kind === "native") {
-    const required = amountWei + gasMntWei;
+    const required = amountWei + gasNativeWei;
     if (walletWei < required) {
-      const gasMnt = formatMnt(gasMntWei);
       return [
         log.error(
-          `Insufficient wallet balance: ${walletLabel} ${asset.coin}. Need ${parsed.amountStr} + ~${gasMnt} gas.`,
+          `Insufficient wallet balance: ${walletLabel} ${asset.coin}. Need ${parsed.amountStr} + ~${formatMnt(gasNativeWei)} gas.`,
         ),
       ];
     }
@@ -154,16 +185,16 @@ export async function depositCommand(args: string[]): Promise<string[]> {
         ),
       ];
     }
-    if (walletMntWei < gasMntWei) {
+    if (walletNativeWei < gasNativeWei) {
       return [
         log.error(
-          `Insufficient MNT for gas: ${formatMnt(walletMntWei)} MNT, need ~${formatMnt(gasMntWei)}.`,
+          `Insufficient ${gas} for gas: ${formatMnt(walletNativeWei)} ${gas}, need ~${formatMnt(gasNativeWei)}.`,
         ),
       ];
     }
   }
 
-  setBusy(`Sending ${asset.coin} on Mantle...`);
+  setBusy(`Sending ${asset.coin} on ${profile.label}...`);
   let txHash: string;
   try {
     if (asset.kind === "native") {
@@ -177,7 +208,7 @@ export async function depositCommand(args: string[]): Promise<string[]> {
       txHash = await sendToken({
         chainId: ctx.chainId,
         privateKey: ctx.privateKey,
-        tokenAddress: asset.tokenAddress![ctx.chainId]!,
+        tokenAddress: asset.tokenAddress!,
         to: depositAddress,
         amountWei,
       });
@@ -192,7 +223,7 @@ export async function depositCommand(args: string[]): Promise<string[]> {
   try {
     creditStatus = await pollDepositCredit({
       network: ctx.network,
-      creds: ctx.creds,
+      creds,
       coin: asset.coin,
       txHash,
     });
@@ -203,22 +234,22 @@ export async function depositCommand(args: string[]): Promise<string[]> {
   let tradingLabel = chalk.dim("skipped — not credited yet");
   if (creditStatus === "credited") {
     setBusy(
-      asset.coin === TRADING_COIN
-        ? `Moving ${TRADING_COIN} to unified trading...`
-        : `Converting ${asset.coin} → ${TRADING_COIN}...`,
+      asset.coin === UNIFIED_COIN
+        ? `Moving ${UNIFIED_COIN} to unified trading...`
+        : `Converting ${asset.coin} → ${UNIFIED_COIN}...`,
     );
     const route = await routeFundDepositToTrading({
       network: ctx.network,
-      creds: ctx.creds,
+      creds,
       coin: asset.coin,
     });
     if (route.status === "ready") {
       const via =
         route.via === "convert"
-          ? `${asset.coin} → ${TRADING_COIN}`
-          : TRADING_COIN;
+          ? `${asset.coin} → ${UNIFIED_COIN}`
+          : UNIFIED_COIN;
       tradingLabel = chalk.green(
-        `+${route.usdtAmount.toFixed(4)} ${TRADING_COIN} unified (${via})`,
+        `+${route.usdtAmount.toFixed(4)} ${UNIFIED_COIN} unified (${via})`,
       );
     } else if (route.status === "skipped") {
       tradingLabel = chalk.dim(route.reason);
@@ -241,11 +272,11 @@ export async function depositCommand(args: string[]): Promise<string[]> {
       `Sent ${chalk.cyan(parsed.amountStr)} ${asset.coin} from ${chalk.cyanBright(ctx.agentName)} to Bybit.`,
     ),
     log.raw(`  ${chalk.dim("To")}       ${depositAddress}`),
-    log.raw(`  ${chalk.dim("Chain")}    ${ctx.chainId} (${DEPOSIT_CHAIN})`),
+    log.raw(`  ${chalk.dim("Chain")}    ${ctx.chainId} (${profile.bybitChain})`),
     log.raw(`  ${chalk.dim("Tx")}       ${txHash}`),
   ];
-  if (gasMntWei > 0n) {
-    lines.push(log.raw(`  ${chalk.dim("Est. gas")} ~${formatMnt(gasMntWei)} MNT`));
+  if (gasNativeWei > 0n) {
+    lines.push(log.raw(`  ${chalk.dim("Est. gas")} ~${formatMnt(gasNativeWei)} ${gas}`));
   }
   lines.push(log.raw(`  ${chalk.dim("Bybit")}     ${creditLabel}`));
   if (creditStatus === "credited") {

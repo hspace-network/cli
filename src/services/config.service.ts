@@ -44,7 +44,21 @@ export interface Strategy {
 }
 
 export type BybitNetwork = "mainnet" | "testnet";
-export type ChainId = "mantle" | "mantle-sepolia";
+export type ChainId = "mantle" | "mantle-sepolia" | "base" | "base-sepolia";
+
+/** Which Bybit network each settlement chain pairs with (mainnet vs testnet). */
+export const CHAIN_NETWORK: Record<ChainId, BybitNetwork> = {
+  mantle: "mainnet",
+  base: "mainnet",
+  "mantle-sepolia": "testnet",
+  "base-sepolia": "testnet",
+};
+
+export const ALL_CHAINS: ChainId[] = ["mantle", "base", "mantle-sepolia", "base-sepolia"];
+
+function isChainId(v: unknown): v is ChainId {
+  return typeof v === "string" && (ALL_CHAINS as string[]).includes(v);
+}
 
 export interface PlatformCreds {
   apiKey: string;
@@ -65,7 +79,13 @@ export interface CliConfig {
 }
 
 export const DEFAULT_NETWORK: BybitNetwork = "mainnet";
-export const DEFAULT_CHAIN: ChainId = "mantle";
+export const DEFAULT_CHAIN: ChainId = "base";
+
+export interface NodeChain {
+  id: string;
+  label: string;
+  network: BybitNetwork;
+}
 
 export interface NodeConfig {
   version: string;
@@ -75,6 +95,7 @@ export interface NodeConfig {
   providers: Provider[];
   platforms: Platform[];
   strategies: Strategy[];
+  chains: NodeChain[];
   defaults: NodeDefaults;
 }
 
@@ -146,7 +167,7 @@ export async function loadCliConfig(): Promise<CliConfig> {
     if (raw.network === "mainnet" || raw.network === "testnet") {
       cfg.network = raw.network;
     }
-    if (raw.chain === "mantle" || raw.chain === "mantle-sepolia") {
+    if (isChainId(raw.chain)) {
       cfg.chain = raw.chain;
     }
 
@@ -198,7 +219,7 @@ export function getEffectiveNetwork(cfg: CliConfig): BybitNetwork {
 }
 
 export function getEffectiveChain(cfg: CliConfig): ChainId {
-  return cfg.chain === "mantle-sepolia" ? "mantle-sepolia" : "mantle";
+  return isChainId(cfg.chain) ? cfg.chain : DEFAULT_CHAIN;
 }
 
 /** Returns an error message when chain and Bybit network are mismatched. */
@@ -206,11 +227,9 @@ export function validateChainNetworkPair(
   chain: ChainId,
   network: BybitNetwork,
 ): string | null {
-  if (chain === "mantle" && network !== "mainnet") {
-    return 'Chain "mantle" must be paired with Bybit network "mainnet".';
-  }
-  if (chain === "mantle-sepolia" && network !== "testnet") {
-    return 'Chain "mantle-sepolia" must be paired with Bybit network "testnet".';
+  const need = CHAIN_NETWORK[chain];
+  if (need !== network) {
+    return `Chain "${chain}" must be paired with Bybit network "${need}".`;
   }
   return null;
 }
@@ -343,6 +362,22 @@ function parseStrategies(value: unknown): Strategy[] {
   return strategies;
 }
 
+function parseChains(value: unknown): NodeChain[] {
+  if (!Array.isArray(value)) return [];
+  const out: NodeChain[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const e = entry as Partial<NodeChain>;
+    // Only surface chains the CLI has a profile for (isChainId), so the picker
+    // never offers a chain the funding stack can't actually use.
+    if (!isChainId(e.id)) continue;
+    const label = pickString(e.label) ?? e.id;
+    const network = e.network === "testnet" ? "testnet" : "mainnet";
+    out.push({ id: e.id, label, network });
+  }
+  return out;
+}
+
 function parseDefaults(value: unknown): NodeDefaults {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const obj = value as Record<string, unknown>;
@@ -398,6 +433,7 @@ export async function fetchNodeConfig(url: string): Promise<NodeConfig> {
     providers: parseProviders(cfg.providers),
     platforms: parsePlatforms(cfg.platforms),
     strategies: parseStrategies(cfg.strategies),
+    chains: parseChains(cfg.chains),
     defaults: parseDefaults(cfg.defaults),
   };
 }

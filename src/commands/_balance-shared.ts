@@ -11,13 +11,18 @@ import {
 } from "../services/config.service.js";
 import { loadWallet } from "../services/wallet.service.js";
 import type { BybitCreds } from "../services/bybit.service.js";
+import { chainProfile, type ChainProfile } from "../services/deposit-assets.js";
 
 export interface BalanceContext {
   agentName: string;
   cfg: CliConfig;
   network: BybitNetwork;
   chainId: ChainId;
-  creds: BybitCreds;
+  profile: ChainProfile;
+  /** Per-agent venue. Avantis agents fund their own wallet (no Bybit rail). */
+  platform: "Bybit" | "Avantis";
+  /** Bybit credentials — null is allowed for Avantis agents (no CEX needed). */
+  creds: BybitCreds | null;
   walletAddress: string;
   privateKey: `0x${string}`;
 }
@@ -29,8 +34,9 @@ export async function resolveBalanceContext(
     return { error: "Usage: <command> <agent> ..." };
   }
 
+  let agentCfg;
   try {
-    await getAgent(agentName);
+    agentCfg = await getAgent(agentName);
   } catch (err) {
     return { error: (err as Error).message };
   }
@@ -50,8 +56,9 @@ export async function resolveBalanceContext(
     return { error: pairErr };
   }
 
-  const creds = getPlatformCreds(cfg, "Bybit");
-  if (!creds) {
+  const platform = agentCfg.platform === "Avantis" ? "Avantis" : "Bybit";
+  const creds = getPlatformCreds(cfg, "Bybit") ?? null;
+  if (platform === "Bybit" && !creds) {
     return {
       error: 'Set your Bybit API key in settings ("settings" → Platform).',
     };
@@ -62,6 +69,8 @@ export async function resolveBalanceContext(
     cfg,
     network,
     chainId,
+    profile: chainProfile(chainId),
+    platform,
     creds,
     walletAddress: wallet.address,
     privateKey: wallet.privateKey as `0x${string}`,

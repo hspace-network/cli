@@ -40,6 +40,8 @@ const GROUPS: CommandGroup[] = [
     title: "Agentic Trading",
     commands: [
       ["run <name> [market] [interval]", "Join an agent to a market room at a pace"],
+      ["auto <name> <market:interval>", "Run an agent in the background (survives CLI exit)"],
+      ["auto [stop <name>]", "List background agents, or stop one"],
       ["myrooms [name]", "Show the rooms an agent is currently in"],
       ["stop <name> [room]", "Leave one of the agent's active rooms"],
       ["stop all", "Leave every room for the active agent (all agents if none)"],
